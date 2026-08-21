@@ -46,11 +46,16 @@ export default async function ProfilePage({ searchParams }: ProfilePageProps) {
                 : `Telegram ID: ${participant.telegramUserId ?? "—"}`}
             </p>
           </div>
-          <form action="/api/auth/logout" method="post">
-            <button className="button secondary" type="submit">
-              Выйти
-            </button>
-          </form>
+          <div className="profileActions">
+            <Link className="button secondary" href="/proposals">
+              Предложения
+            </Link>
+            <form action="/api/auth/logout" method="post">
+              <button className="button secondary" type="submit">
+                Выйти
+              </button>
+            </form>
+          </div>
         </div>
 
         <form className="profileEdit" action="/api/profile" method="post">

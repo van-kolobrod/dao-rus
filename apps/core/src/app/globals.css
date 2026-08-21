@@ -16,7 +16,7 @@ body {
   background: var(--bg);
   color: var(--ink);
 }
-button, input { font: inherit; }
+button, input, textarea { font: inherit; }
 
 .shell {
   min-height: 100vh;
@@ -67,6 +67,8 @@ h1 { margin: 0 0 12px; font-size: clamp(34px, 7vw, 64px); line-height: 1; }
 
 .profileHeader { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; }
 .profileHeader h1 { font-size: clamp(30px, 6vw, 52px); }
+.profileActions { display: flex; flex-wrap: wrap; gap: 10px; }
+.profileActions form { margin: 0; }
 .profileEdit { margin-top: 30px; }
 .profileEdit label {
   display: block;
@@ -163,6 +165,40 @@ dd { margin: 6px 0 0; }
 }
 .activityHistory li div { display: grid; gap: 4px; }
 .activityHistory li code { color: var(--muted); font-size: 12px; }
+
+.proposalForm {
+  display: grid;
+  gap: 10px;
+  margin-top: 34px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.proposalForm label {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.proposalForm input,
+.proposalForm textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  background: #fff;
+  color: var(--ink);
+}
+.proposalForm textarea { min-height: 140px; resize: vertical; }
+.proposalForm .button { justify-self: start; margin-top: 6px; }
+.proposalList { margin-top: 38px; }
+.proposalList h2 { margin: 0 0 14px; font-size: 22px; }
+.proposalList ol { list-style: none; margin: 0; padding: 0; }
+.proposalList li { padding: 20px 0; border-top: 1px solid var(--line); }
+.proposalList h3 { margin: 10px 0 8px; font-size: 22px; }
+.proposalList li > p { margin: 0; line-height: 1.55; white-space: pre-wrap; }
+.proposalMeta { display: flex; flex-wrap: wrap; gap: 8px 16px; color: var(--muted); font-size: 12px; }
 
 @media (max-width: 620px) {
   .activitySummary { grid-template-columns: 1fr; }

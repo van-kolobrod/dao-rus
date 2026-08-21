@@ -7,9 +7,10 @@ describe("activityEventLabel", () => {
     expect(activityEventLabel("participant.profile_updated")).toBe(
       "Изменение имени профиля",
     );
+    expect(activityEventLabel("proposal.created")).toBe("Создание предложения");
   });
 
   it("falls back to the raw event type for unknown events", () => {
-    expect(activityEventLabel("proposal.created")).toBe("proposal.created");
+    expect(activityEventLabel("proposal.updated")).toBe("proposal.updated");
   });
 });

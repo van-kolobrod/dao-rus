@@ -29,6 +29,13 @@ export function isTelegramConfigured(): boolean {
   return Boolean(clientId && clientSecret);
 }
 
+export function telegramIngestionConfig() {
+  return {
+    webhookSecret: env("TELEGRAM_WEBHOOK_SECRET"),
+    chatId: env("TELEGRAM_INGEST_CHAT_ID"),
+  };
+}
+
 export function defaultMembershipStatus(): MembershipStatus {
   const value = (env("DEFAULT_MEMBERSHIP_STATUS") ?? "candidate") as MembershipStatus;
   const allowed: MembershipStatus[] = [

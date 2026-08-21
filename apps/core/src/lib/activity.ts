@@ -18,6 +18,7 @@ export type ActivitySummary = {
 export const activityEventLabels: Record<string, string> = {
   "participant.created": "Регистрация в DAO Core",
   "participant.logged_in": "Вход в DAO Core",
+  "participant.profile_updated": "Изменение имени профиля",
 };
 
 export function activityEventLabel(eventType: string): string {

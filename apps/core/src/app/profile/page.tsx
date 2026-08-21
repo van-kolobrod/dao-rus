@@ -13,11 +13,25 @@ const statusLabels: Record<string, string> = {
   left: "вышел",
 };
 
-export default async function ProfilePage() {
+type ProfilePageProps = {
+  searchParams: Promise<{ profile_update?: string }>;
+};
+
+const updateMessages: Record<string, string> = {
+  updated: "Имя профиля обновлено.",
+  unchanged: "Имя не изменилось.",
+  empty_name: "Введите непустое имя.",
+};
+
+export default async function ProfilePage({ searchParams }: ProfilePageProps) {
   const participant = await getCurrentParticipant();
   if (!participant) redirect("/");
 
+  const params = await searchParams;
   const activity = await getActivitySummary(participant.id);
+  const updateMessage = params.profile_update
+    ? updateMessages[params.profile_update]
+    : null;
 
   return (
     <main className="shell">
@@ -38,6 +52,26 @@ export default async function ProfilePage() {
             </button>
           </form>
         </div>
+
+        <form className="profileEdit" action="/api/profile" method="post">
+          <label htmlFor="display-name">Отображаемое имя</label>
+          <div>
+            <input
+              id="display-name"
+              name="display_name"
+              defaultValue={participant.displayName}
+              required
+            />
+            <button className="button primary" type="submit">
+              Сохранить
+            </button>
+          </div>
+          {updateMessage ? (
+            <p className={params.profile_update === "empty_name" ? "formError" : "formNotice"}>
+              {updateMessage}
+            </p>
+          ) : null}
+        </form>
 
         <dl className="facts">
           <div>

@@ -67,6 +67,29 @@ h1 { margin: 0 0 12px; font-size: clamp(34px, 7vw, 64px); line-height: 1; }
 
 .profileHeader { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; }
 .profileHeader h1 { font-size: clamp(30px, 6vw, 52px); }
+.profileEdit { margin-top: 30px; }
+.profileEdit label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.profileEdit > div { display: flex; gap: 10px; }
+.profileEdit input {
+  min-width: 0;
+  flex: 1;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0 12px;
+  background: #fff;
+  color: var(--ink);
+}
+.formNotice, .formError { margin: 8px 0 0; font-size: 13px; }
+.formNotice { color: var(--accent); }
+.formError { color: #9b3f36; }
 .facts { margin: 34px 0; display: grid; gap: 12px; }
 .facts div { border-top: 1px solid var(--line); padding-top: 12px; }
 dt { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
@@ -80,6 +103,7 @@ dd { margin: 6px 0 0; }
 @media (max-width: 620px) {
   .metrics { grid-template-columns: 1fr; }
   .profileHeader { flex-direction: column; }
+  .profileEdit > div { align-items: stretch; flex-direction: column; }
 }
 
 .metrics small,

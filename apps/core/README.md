@@ -22,6 +22,8 @@
 - Telegram OpenID Connect Authorization Code Flow + PKCE;
 - серверная проверка Telegram ID token через JWKS;
 - профиль `/profile`;
+- изменение `display_name` текущим авторизованным участником;
+- страница `/profile/activity` со статистикой за 7 и 30 дней и последними событиями;
 - заглушки для трёх будущих профилей репутации: активность, отзывы, коммуникабельность;
 - локальный demo-login, чтобы проверить прототип до настройки BotFather;
 - SQL migrations;
@@ -155,7 +157,8 @@ DEV_AUTH_BYPASS=false
 Append-oriented журнал значимых событий. Пока:
 
 - `participant.created`;
-- `participant.logged_in`.
+- `participant.logged_in`;
+- `participant.profile_updated`.
 
 ### `sessions`
 
@@ -167,7 +170,7 @@ Legacy bridge был переходником между старым Telegram L
 
 Новый вход использует актуальный Telegram OIDC непосредственно.
 
-## 7. Следующий шаг после проверки v0.1
+## 7. Проверка Activity v0.2
 
 Не расширять приложение сразу.
 
@@ -177,6 +180,8 @@ Legacy bridge был переходником между старым Telegram L
 2. повторный вход использует тот же Participant;
 3. `/profile` работает;
 4. в `events` появляются `participant.created` и `participant.logged_in`;
-5. после этого настроить настоящий Telegram OIDC.
+5. изменение имени на `/profile` сохраняется после обновления страницы;
+6. в `events` появляется `participant.profile_updated`, а событие видно на `/profile/activity`;
+7. после этого настроить настоящий Telegram OIDC.
 
-Только затем переходить к Activity/Events v0.2.
+Только затем расширять набор событий активности.

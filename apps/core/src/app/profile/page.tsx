@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { LocalDateTime } from "@/components/local-date-time";
 import { getActivitySummary } from "@/lib/activity";
 import { getCurrentParticipant } from "@/lib/session";
 
@@ -89,7 +90,9 @@ export default async function ProfilePage({ searchParams }: ProfilePageProps) {
           </div>
           <div>
             <dt>Дата регистрации</dt>
-            <dd>{participant.createdAt.toLocaleString("ru-RU")}</dd>
+            <dd>
+              <LocalDateTime value={participant.createdAt.toISOString()} />
+            </dd>
           </div>
         </dl>
 
@@ -98,9 +101,13 @@ export default async function ProfilePage({ searchParams }: ProfilePageProps) {
             <span>Активность</span>
             <strong>{activity.events30d} событий / 30 дней</strong>
             <small>
-              {activity.lastActivityAt
-                ? `Последняя: ${activity.lastActivityAt.toLocaleString("ru-RU")}`
-                : "Пока нет событий"}
+              {activity.lastActivityAt ? (
+                <>
+                  Последняя: <LocalDateTime value={activity.lastActivityAt.toISOString()} />
+                </>
+              ) : (
+                "Пока нет событий"
+              )}
             </small>
             <Link className="metricLink" href="/profile/activity">
               Подробнее →

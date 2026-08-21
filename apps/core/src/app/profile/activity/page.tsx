@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { LocalDateTime } from "@/components/local-date-time";
 import { activityEventLabel, getActivitySummary } from "@/lib/activity";
 import { getCurrentParticipant } from "@/lib/session";
 
@@ -51,7 +52,9 @@ export default async function ActivityPage() {
                 <li key={event.id}>
                   <div>
                     <strong>{activityEventLabel(event.eventType)}</strong>
-                    <span className="muted">{event.createdAt.toLocaleString("ru-RU")}</span>
+                    <span className="muted">
+                      <LocalDateTime value={event.createdAt.toISOString()} />
+                    </span>
                   </div>
                   <code>{event.eventType}</code>
                 </li>

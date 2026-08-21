@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { LocalDateTime } from "@/components/local-date-time";
 import { listProposals } from "@/lib/proposals";
 import { getCurrentParticipant } from "@/lib/session";
 
@@ -63,7 +64,9 @@ export default async function ProposalsPage({ searchParams }: ProposalsPageProps
                 <li key={proposal.id}>
                   <div className="proposalMeta">
                     <span>{proposal.authorDisplayName}</span>
-                    <span>{proposal.createdAt.toLocaleString("ru-RU")}</span>
+                    <span>
+                      <LocalDateTime value={proposal.createdAt.toISOString()} />
+                    </span>
                     <span>Статус: открыто</span>
                   </div>
                   <h3>{proposal.title}</h3>

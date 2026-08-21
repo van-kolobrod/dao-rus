@@ -126,7 +126,15 @@ DEV_AUTH_BYPASS=false
 
 `TELEGRAM_OIDC_CLIENT_SECRET` никогда не должен попадать в браузер, Telegram Mini App или Git.
 
+После изменения `.env` пересоздай контейнер `web`, чтобы Docker Compose передал ему новые значения:
+
+```powershell
+docker compose up -d --force-recreate web
+```
+
 Для реального Telegram OIDC локальный `localhost` может быть неудобен из-за Allowed URLs. Практический путь — тестовый HTTPS-домен/туннель, зарегистрированный в BotFather.
+
+При тестировании через туннель открывай приложение и начинай Telegram login с того же публичного HTTPS origin, который указан в `APP_BASE_URL`. Если начать flow с `localhost`, host-only cookies с `state` и PKCE verifier останутся на `localhost`, и callback на домене туннеля их не получит.
 
 ## 5. Модель данных v0.1
 

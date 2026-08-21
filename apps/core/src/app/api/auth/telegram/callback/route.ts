@@ -40,11 +40,14 @@ export async function GET(request: NextRequest) {
   const state = request.nextUrl.searchParams.get("state");
   const expectedState = request.cookies.get("dao_tg_state")?.value;
   const verifier = request.cookies.get("dao_tg_verifier")?.value;
+  const stateMatches = Boolean(state && expectedState && state === expectedState);
 
-  if (!code || !state || !expectedState || !verifier || state !== expectedState) {
-    return new NextResponse("Invalid or expired Telegram login flow", {
+  if (!code || !state || !expectedState || !verifier || !stateMatches) {
+    const response = new NextResponse("Invalid or expired Telegram login flow", {
       status: 400,
     });
+    clearFlowCookies(response);
+    return response;
   }
 
   try {

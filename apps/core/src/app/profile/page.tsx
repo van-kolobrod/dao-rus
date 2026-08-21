@@ -1,4 +1,6 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
+import { getActivitySummary } from "@/lib/activity";
 import { getCurrentParticipant } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -14,6 +16,8 @@ const statusLabels: Record<string, string> = {
 export default async function ProfilePage() {
   const participant = await getCurrentParticipant();
   if (!participant) redirect("/");
+
+  const activity = await getActivitySummary(participant.id);
 
   return (
     <main className="shell">
@@ -53,7 +57,15 @@ export default async function ProfilePage() {
         <div className="metrics">
           <article>
             <span>Активность</span>
-            <strong>Нет данных</strong>
+            <strong>{activity.events30d} событий / 30 дней</strong>
+            <small>
+              {activity.lastActivityAt
+                ? `Последняя: ${activity.lastActivityAt.toLocaleString("ru-RU")}`
+                : "Пока нет событий"}
+            </small>
+            <Link className="metricLink" href="/profile/activity">
+              Подробнее →
+            </Link>
           </article>
           <article>
             <span>Отзывы</span>

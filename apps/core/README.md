@@ -339,6 +339,42 @@ Telegram presence не является активностью в ДАО и не
 
 До первого Telegram OIDC login roster-created identity использует технический `provider_subject`. При последующем login Core находит её по Telegram user ID, сохраняет фактический OIDC `sub` и создаёт сессию для того же Participant UUID.
 
+#### Membership History v0.1
+
+`telegram_roster_entries.membership_status` остаётся текущим административным
+состоянием. Каноническая биография членства хранится append-only событиями в уже
+существующей таблице `events`; отдельная таблица истории не создаётся, чтобы не
+появился второй источник истины.
+
+Ручные переходы Participant Registry создают следующие доменные события:
+
+- `unknown → participant` — `membership.joined`;
+- `participant → left` — `membership.left`;
+- `left → participant` — `membership.rejoined`;
+- `participant → excluded` — `membership.excluded`;
+- `excluded → participant` — `membership.restored`.
+
+`rejoined` и `restored` являются событиями биографии, а не новыми текущими
+статусами. Изменения с участием `bot` и прочие классификационные переходы не
+превращаются автоматически в политические события членства.
+
+У membership event поле `events.participant_id` содержит канонический UUID
+участника. Payload сохраняет автора административного действия, Telegram roster
+ID, старое и новое состояния, источник `participant_registry` и `occurred_at`.
+При первом `joined` Membership Binding сначала создаёт или находит Participant,
+после чего история уже ссылается на этот UUID. Выход, исключение и возвращение
+не меняют UUID.
+
+Изменение текущего статуса, существующий registry audit event и membership event
+записываются одной транзакцией. Registry audit отвечает на вопрос «кто изменил
+поле», а Membership History — «что произошло с членством». No-op и переходы без
+доменной семантики не создают membership event.
+
+В `/profile` раздел **«История участия»** показывает только membership-события от
+новых к старым, локальное время браузера и, для ручных действий, администратора.
+Изменения человеческой верификации остаются независимыми registry audit events и
+в эту проекцию не входят.
+
 Каждое фактическое изменение статуса и его audit event записываются одной транзакцией. Автор берётся только из серверной сессии. Авторизованный администратор также видит на `/profile` ссылку **«Участники ДАО»**; её скрытие для остальных пользователей является только UX, а серверные проверки страницы и API остаются обязательными и независимыми.
 
 События `participant_registry.membership_status_changed` и `participant_registry.identity_verification_changed` являются канонической audit history реестра. Отдельная таблица audit log не создаётся, и данные из `events` не дублируются. Каждое событие описывает изменение состояния: кто изменил (`changed_by_participant_id`), к какой roster entry оно относится (`telegram_user_id`), какое значение изменилось, старое и новое значения и время изменения (`changed_at`). Это позволяет позднее построить отдельное представление истории административных изменений.
@@ -380,7 +416,9 @@ Append-oriented журнал значимых событий. Пока:
 - `proposal.created`;
 - `telegram.message_created`;
 - `participant_registry.membership_status_changed`;
-- `participant_registry.identity_verification_changed`.
+- `participant_registry.identity_verification_changed`;
+- `membership.joined`, `membership.left`, `membership.rejoined`;
+- `membership.excluded`, `membership.restored`.
 
 ### `telegram_processed_updates`
 

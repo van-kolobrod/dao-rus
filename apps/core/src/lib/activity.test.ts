@@ -14,6 +14,11 @@ describe("activityEventLabel", () => {
     expect(activityEventLabel("participant_registry.identity_verification_changed")).toBe(
       "Изменение верификации в реестре",
     );
+    expect(activityEventLabel("membership.joined")).toBe("Принятие в ДАО");
+    expect(activityEventLabel("membership.left")).toBe("Выход из ДАО");
+    expect(activityEventLabel("membership.rejoined")).toBe("Возвращение в ДАО");
+    expect(activityEventLabel("membership.excluded")).toBe("Исключение из ДАО");
+    expect(activityEventLabel("membership.restored")).toBe("Восстановление в ДАО");
   });
 
   it("falls back to the raw event type for unknown events", () => {

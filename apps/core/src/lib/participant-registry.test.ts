@@ -22,6 +22,14 @@ class FakeClient implements ParticipantRegistryDatabaseClient {
   identityVerification: string;
   rosterParticipantId: string | null;
   identityParticipantId: string | null;
+  persistedMembershipEvents: string[] = [];
+  private pendingMembershipEvents: string[] = [];
+  private transactionState: {
+    membershipStatus: string;
+    identityVerification: string;
+    rosterParticipantId: string | null;
+    identityParticipantId: string | null;
+  } | null = null;
 
   constructor(
     private readonly options: {
@@ -31,6 +39,7 @@ class FakeClient implements ParticipantRegistryDatabaseClient {
       identityParticipantId?: string | null;
       missing?: boolean;
       failRegistryEvent?: boolean;
+      failMembershipEvent?: boolean;
     } = {},
   ) {
     this.membershipStatus = options.membershipStatus ?? "unknown";
@@ -41,6 +50,36 @@ class FakeClient implements ParticipantRegistryDatabaseClient {
 
   async query(text: string, values?: unknown[]) {
     this.queries.push({ text, values });
+
+    if (text === "BEGIN") {
+      this.transactionState = {
+        membershipStatus: this.membershipStatus,
+        identityVerification: this.identityVerification,
+        rosterParticipantId: this.rosterParticipantId,
+        identityParticipantId: this.identityParticipantId,
+      };
+      this.pendingMembershipEvents = [];
+      return { rowCount: 1, rows: [] };
+    }
+
+    if (text === "COMMIT") {
+      this.persistedMembershipEvents.push(...this.pendingMembershipEvents);
+      this.pendingMembershipEvents = [];
+      this.transactionState = null;
+      return { rowCount: 1, rows: [] };
+    }
+
+    if (text === "ROLLBACK") {
+      if (this.transactionState) {
+        this.membershipStatus = this.transactionState.membershipStatus;
+        this.identityVerification = this.transactionState.identityVerification;
+        this.rosterParticipantId = this.transactionState.rosterParticipantId;
+        this.identityParticipantId = this.transactionState.identityParticipantId;
+      }
+      this.pendingMembershipEvents = [];
+      this.transactionState = null;
+      return { rowCount: 1, rows: [] };
+    }
 
     if (text.includes("SELECT membership_status")) {
       if (this.options.missing) return { rowCount: 0, rows: [] };
@@ -110,6 +149,17 @@ class FakeClient implements ParticipantRegistryDatabaseClient {
       throw new Error("registry event insert failed");
     }
 
+    if (
+      text.includes("INSERT INTO events") &&
+      String(values?.[0]).startsWith("membership.")
+    ) {
+      if (this.options.failMembershipEvent) {
+        throw new Error("membership history insert failed");
+      }
+      this.pendingMembershipEvents.push(String(values?.[0]));
+      return { rowCount: 1, rows: [] };
+    }
+
     return { rowCount: 1, rows: [] };
   }
 
@@ -131,6 +181,14 @@ function registryEvent(client: FakeClient) {
     ({ text, values }) =>
       text.includes("INSERT INTO events") &&
       values?.[0] === "participant_registry.membership_status_changed",
+  );
+}
+
+function membershipEvent(client: FakeClient) {
+  return client.queries.find(
+    ({ text, values }) =>
+      text.includes("INSERT INTO events") &&
+      String(values?.[0]).startsWith("membership."),
   );
 }
 
@@ -196,14 +254,60 @@ describe("updateParticipantRegistryWithDatabase", () => {
 
     const event = registryEvent(client);
     expect(event?.values?.[1]).toBe(adminParticipantId);
-    expect(JSON.parse(String(event?.values?.[2]))).toMatchObject({
+    const auditPayload = JSON.parse(String(event?.values?.[2]));
+    expect(auditPayload).toMatchObject({
       telegram_user_id: telegramUserId,
       old_value: "unknown",
       new_value: "participant",
       changed_by_participant_id: adminParticipantId,
     });
+    const historyEvent = membershipEvent(client);
+    expect(historyEvent?.values?.[0]).toBe("membership.joined");
+    expect(historyEvent?.values?.[1]).toBe(createdParticipantId);
+    const historyPayload = JSON.parse(String(historyEvent?.values?.[2]));
+    expect(historyPayload).toMatchObject({
+      participant_id: createdParticipantId,
+      old_status: "unknown",
+      new_status: "participant",
+      changed_by_participant_id: adminParticipantId,
+      source: "participant_registry",
+    });
+    expect(historyPayload.occurred_at).toBe(auditPayload.changed_at);
+    expect(historyEvent?.values?.[3]).toBe(auditPayload.changed_at);
+    expect(client.persistedMembershipEvents).toEqual(["membership.joined"]);
     expect(client.queries.at(-1)?.text).toBe("COMMIT");
   });
+
+  it.each([
+    ["participant", "left", "membership.left"],
+    ["left", "participant", "membership.rejoined"],
+    ["participant", "excluded", "membership.excluded"],
+    ["excluded", "participant", "membership.restored"],
+  ])(
+    "records %s to %s as %s for the same Participant UUID",
+    async (oldStatus, newStatus, eventType) => {
+      const client = new FakeClient({
+        membershipStatus: oldStatus,
+        rosterParticipantId: existingParticipantId,
+        identityParticipantId: existingParticipantId,
+      });
+
+      await updateParticipantRegistryWithDatabase(
+        fakeDatabase(client),
+        adminParticipantId,
+        telegramUserId,
+        "membership_status",
+        newStatus,
+      );
+
+      expect(client.rosterParticipantId).toBe(existingParticipantId);
+      expect(membershipEvent(client)?.values?.slice(0, 2)).toEqual([
+        eventType,
+        existingParticipantId,
+      ]);
+      expect(client.persistedMembershipEvents).toEqual([eventType]);
+    },
+  );
 
   it("uses an existing Telegram ExternalIdentity without creating a duplicate", async () => {
     const client = new FakeClient({ identityParticipantId: existingParticipantId });
@@ -257,6 +361,7 @@ describe("updateParticipantRegistryWithDatabase", () => {
     expect(queryCount(client, "INSERT INTO participants")).toBe(0);
     expect(queryCount(client, "INSERT INTO external_identities")).toBe(0);
     expect(queryCount(client, "INSERT INTO events")).toBe(0);
+    expect(client.persistedMembershipEvents).toEqual([]);
     expect(client.queries.at(-1)?.text).toBe("COMMIT");
   });
 
@@ -345,6 +450,52 @@ describe("updateParticipantRegistryWithDatabase", () => {
     expect(queryCount(client, "INSERT INTO external_identities")).toBe(1);
     expect(client.queries.at(-1)?.text).toBe("ROLLBACK");
     expect(client.queries.some(({ text }) => text === "COMMIT")).toBe(false);
+    expect(client.persistedMembershipEvents).toEqual([]);
+    expect(client.membershipStatus).toBe("unknown");
+  });
+
+  it("rolls back status and registry audit when membership history fails", async () => {
+    const client = new FakeClient({
+      membershipStatus: "participant",
+      rosterParticipantId: existingParticipantId,
+      identityParticipantId: existingParticipantId,
+      failMembershipEvent: true,
+    });
+
+    await expect(
+      updateParticipantRegistryWithDatabase(
+        fakeDatabase(client),
+        adminParticipantId,
+        telegramUserId,
+        "membership_status",
+        "left",
+      ),
+    ).rejects.toThrow("membership history insert failed");
+
+    expect(registryEvent(client)).toBeDefined();
+    expect(membershipEvent(client)).toBeDefined();
+    expect(client.queries.at(-1)?.text).toBe("ROLLBACK");
+    expect(client.membershipStatus).toBe("participant");
+    expect(client.persistedMembershipEvents).toEqual([]);
+  });
+
+  it("rejects a historical transition without a canonical Participant", async () => {
+    const client = new FakeClient({ membershipStatus: "participant" });
+
+    await expect(
+      updateParticipantRegistryWithDatabase(
+        fakeDatabase(client),
+        adminParticipantId,
+        telegramUserId,
+        "membership_status",
+        "left",
+      ),
+    ).rejects.toThrow("requires a canonical Participant");
+
+    expect(client.membershipStatus).toBe("participant");
+    expect(registryEvent(client)).toBeUndefined();
+    expect(membershipEvent(client)).toBeUndefined();
+    expect(client.queries.at(-1)?.text).toBe("ROLLBACK");
   });
 });
 

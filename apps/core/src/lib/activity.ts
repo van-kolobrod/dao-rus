@@ -22,6 +22,11 @@ export const activityEventLabels: Record<string, string> = {
   "proposal.created": "Создание предложения",
   "participant_registry.membership_status_changed": "Изменение статуса членства в реестре",
   "participant_registry.identity_verification_changed": "Изменение верификации в реестре",
+  "membership.joined": "Принятие в ДАО",
+  "membership.left": "Выход из ДАО",
+  "membership.rejoined": "Возвращение в ДАО",
+  "membership.excluded": "Исключение из ДАО",
+  "membership.restored": "Восстановление в ДАО",
 };
 
 export function activityEventLabel(eventType: string): string {

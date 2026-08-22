@@ -222,6 +222,12 @@ dd { margin: 6px 0 0; }
 }
 .activityHistory li div { display: grid; gap: 4px; }
 .activityHistory li code { color: var(--muted); font-size: 12px; }
+.membershipHistory { margin-bottom: 34px; }
+.membershipHistoryEvent { gap: 7px !important; }
+.membershipHistoryTitle { font-size: 16px; }
+.membershipHistoryTime,
+.membershipHistoryAuthor { font-size: 12px; line-height: 1.4; }
+.membershipHistoryAuthor { padding-top: 2px; }
 
 .proposalForm {
   display: grid;

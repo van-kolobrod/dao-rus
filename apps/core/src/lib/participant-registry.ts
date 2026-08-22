@@ -1,3 +1,8 @@
+import {
+  membershipEventTypeForTransition,
+  recordMembershipTransitionWithClient,
+} from "./membership-history";
+
 export const registryMembershipStatuses = [
   "unknown",
   "participant",
@@ -304,7 +309,7 @@ async function bindParticipantForMembership(
   client: ParticipantRegistryDatabaseClient,
   roster: Record<string, unknown>,
   telegramUserId: string,
-): Promise<void> {
+): Promise<string> {
   const rosterParticipantId = roster.participant_id
     ? String(roster.participant_id)
     : null;
@@ -416,6 +421,8 @@ async function bindParticipantForMembership(
       ],
     );
   }
+
+  return participantId;
 }
 
 export async function updateParticipantRegistryWithDatabase(
@@ -461,8 +468,24 @@ export async function updateParticipantRegistryWithDatabase(
       return { changed: false, field, oldValue, newValue: normalizedNewValue };
     }
 
+    let membershipParticipantId = current.rows[0].participant_id
+      ? String(current.rows[0].participant_id)
+      : null;
     if (field === "membership_status" && normalizedNewValue === "participant") {
-      await bindParticipantForMembership(client, current.rows[0], telegramUserId);
+      membershipParticipantId = await bindParticipantForMembership(
+        client,
+        current.rows[0],
+        telegramUserId,
+      );
+    }
+
+    const membershipEventType = field === "membership_status"
+      ? membershipEventTypeForTransition(oldValue, normalizedNewValue)
+      : null;
+    if (membershipEventType && !membershipParticipantId) {
+      throw new ParticipantRegistryIntegrityError(
+        `Membership transition ${oldValue} -> ${normalizedNewValue} requires a canonical Participant`,
+      );
     }
 
     const changedAt = new Date().toISOString();
@@ -492,6 +515,16 @@ export async function updateParticipantRegistryWithDatabase(
         }),
       ],
     );
+    if (membershipEventType && membershipParticipantId) {
+      await recordMembershipTransitionWithClient(client, {
+        participantId: membershipParticipantId,
+        oldStatus: oldValue,
+        newStatus: normalizedNewValue,
+        changedByParticipantId,
+        telegramUserId,
+        occurredAt: changedAt,
+      });
+    }
     await client.query("COMMIT");
     return { changed: true, field, oldValue, newValue: normalizedNewValue };
   } catch (error) {

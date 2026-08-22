@@ -3,6 +3,10 @@ import { redirect } from "next/navigation";
 import { LocalDateTime } from "@/components/local-date-time";
 import { getActivitySummary } from "@/lib/activity";
 import { hasPrototypeAdminAccess } from "@/lib/config";
+import {
+  getMembershipHistory,
+  membershipEventLabel,
+} from "@/lib/membership-history";
 import { getCurrentParticipant } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -30,7 +34,10 @@ export default async function ProfilePage({ searchParams }: ProfilePageProps) {
   if (!participant) redirect("/");
 
   const params = await searchParams;
-  const activity = await getActivitySummary(participant.id);
+  const [activity, membershipHistory] = await Promise.all([
+    getActivitySummary(participant.id),
+    getMembershipHistory(participant.id),
+  ]);
   const hasAdminAccess = hasPrototypeAdminAccess(participant.id);
   const updateMessage = params.profile_update
     ? updateMessages[params.profile_update]
@@ -102,6 +109,33 @@ export default async function ProfilePage({ searchParams }: ProfilePageProps) {
             </dd>
           </div>
         </dl>
+
+        <section className="activityHistory membershipHistory">
+          <h2>История участия</h2>
+          {membershipHistory.length ? (
+            <ol>
+              {membershipHistory.map((event) => (
+                <li key={event.id}>
+                  <div className="membershipHistoryEvent">
+                    <strong className="membershipHistoryTitle">
+                      {membershipEventLabel(event.eventType)}
+                    </strong>
+                    <span className="muted membershipHistoryTime">
+                      Когда: <LocalDateTime value={event.occurredAt.toISOString()} />
+                    </span>
+                    {event.changedByParticipantId ? (
+                      <small className="muted membershipHistoryAuthor">
+                        Изменил: {event.changedByDisplayName ?? event.changedByParticipantId}
+                      </small>
+                    ) : null}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="muted">История участия пока не зафиксирована.</p>
+          )}
+        </section>
 
         <div className="metrics">
           <article>

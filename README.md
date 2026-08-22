@@ -30,7 +30,8 @@ dao-rus/
 ├── docs/
 │   ├── ontology/
 │   ├── governance/
-│   └── architecture/
+│   ├── architecture/
+│   └── strategy/
 └── src/
 ```
 
@@ -85,6 +86,13 @@ dao-rus/
 * безопасность и аудит.
 
 Текущее направление развития: [Telegram-first архитектура DAO Rus](docs/architecture/telegram-first.md).
+
+### `docs/strategy/`
+
+Стратегические направления и связи между будущими подсистемами без превращения
+их в обязательный roadmap или техническую спецификацию.
+
+Текущая рабочая гипотеза: [стратегическая траектория DAO Rus](docs/strategy/trajectory.md).
 
 ### `src/`
 

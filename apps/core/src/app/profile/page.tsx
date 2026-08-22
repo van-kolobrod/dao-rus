@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { LocalDateTime } from "@/components/local-date-time";
 import { getActivitySummary } from "@/lib/activity";
+import { hasPrototypeAdminAccess } from "@/lib/config";
 import { getCurrentParticipant } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -30,6 +31,7 @@ export default async function ProfilePage({ searchParams }: ProfilePageProps) {
 
   const params = await searchParams;
   const activity = await getActivitySummary(participant.id);
+  const hasAdminAccess = hasPrototypeAdminAccess(participant.id);
   const updateMessage = params.profile_update
     ? updateMessages[params.profile_update]
     : null;
@@ -48,6 +50,11 @@ export default async function ProfilePage({ searchParams }: ProfilePageProps) {
             </p>
           </div>
           <div className="profileActions">
+            {hasAdminAccess ? (
+              <Link className="button secondary" href="/admin/participants">
+                Участники ДАО
+              </Link>
+            ) : null}
             <Link className="button secondary" href="/proposals">
               Предложения
             </Link>

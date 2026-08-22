@@ -27,6 +27,7 @@
 - создание простых предложений и список `/proposals`;
 - приём сообщений одного разрешённого Telegram-чата через защищённый webhook;
 - одноразовый импорт Telegram roster snapshot без создания Participant;
+- защищённый прототипный Participant Registry для ручной классификации roster;
 - заглушки для трёх будущих профилей репутации: активность, отзывы, коммуникабельность;
 - локальный demo-login, чтобы проверить прототип до настройки BotFather;
 - SQL migrations;
@@ -278,10 +279,32 @@ docker compose exec web npm run telegram:roster:import -- "/app/.local/telegram/
 Проверить импорт можно напрямую:
 
 ```powershell
-docker compose exec db psql -U dao -d dao -c "SELECT telegram_user_id, username, display_name, is_bot, identity_verification, participant_id, observed_at FROM telegram_roster_entries ORDER BY display_name, telegram_user_id;"
+docker compose exec db psql -U dao -d dao -c "SELECT telegram_user_id, username, display_name, is_bot, membership_status, identity_verification, participant_id, observed_at FROM telegram_roster_entries ORDER BY display_name, telegram_user_id;"
 ```
 
-Web-страница roster пока намеренно отсутствует: сначала требуется отдельная модель admin/moderator authorization для доступа к персональному списку.
+### Participant Registry v0.1
+
+Примени migrations и добавь внутренний UUID администратора в локальный `.env` (не в Git):
+
+```dotenv
+ADMIN_PARTICIPANT_IDS=00000000-0000-0000-0000-000000000001
+```
+
+Для нескольких локальных администраторов UUID перечисляются через запятую. Это явный временный allowlist прототипа: сервер сверяет с ним `participant.id` из действующей сессии. Пустое значение не даёт доступ никому. Механизм не является полноценной системой ролей и должен быть заменён Role/Permission моделью.
+
+После пересоздания `web` войди под разрешённым Participant и открой:
+
+`http://localhost:3000/admin/participants`
+
+Страница позволяет искать по имени, username и Telegram ID, фильтровать roster по членству и человеческой верификации и менять эти две независимые координаты. Обычный Participant перенаправляется из страницы в профиль и получает `403 Forbidden` при прямой попытке изменить запись через API.
+
+`membership_status` roster имеет значения `unknown`, `participant`, `left`, `excluded`, `bot`; импортированные legacy-записи получают `unknown`. Это поле не меняет `participants.membership_status` и не создаёт Participant. `identity_verification` остаётся отдельным значением `unverified` / `verified`, поэтому `participant + unverified` является допустимым состоянием.
+
+Каждое фактическое изменение статуса и его audit event записываются одной транзакцией. Автор берётся только из серверной сессии. Авторизованный администратор также видит на `/profile` ссылку **«Участники ДАО»**; её скрытие для остальных пользователей является только UX, а серверные проверки страницы и API остаются обязательными и независимыми.
+
+События `participant_registry.membership_status_changed` и `participant_registry.identity_verification_changed` являются канонической audit history реестра. Отдельная таблица audit log не создаётся, и данные из `events` не дублируются. Каждое событие описывает изменение состояния: кто изменил (`changed_by_participant_id`), к какой roster entry оно относится (`telegram_user_id`), какое значение изменилось, старое и новое значения и время изменения (`changed_at`). Это позволяет позднее построить отдельное представление истории административных изменений.
+
+No-op сохранение не является изменением состояния, поэтому событие для него не создаётся и в audit history оно не попадает. Нажатие кнопки само по себе не является административным событием.
 
 ## 7. Модель данных v0.1
 
@@ -316,7 +339,9 @@ Append-oriented журнал значимых событий. Пока:
 - `participant.logged_in`;
 - `participant.profile_updated`;
 - `proposal.created`;
-- `telegram.message_created`.
+- `telegram.message_created`;
+- `participant_registry.membership_status_changed`;
+- `participant_registry.identity_verification_changed`.
 
 ### `telegram_processed_updates`
 
@@ -329,6 +354,7 @@ Append-oriented журнал значимых событий. Пока:
 - `telegram_user_id` — первичный ключ;
 - `username`, `display_name`, `is_bot`;
 - `identity_verification` — `verified` или `unverified`, по умолчанию `unverified`;
+- `membership_status` — независимый управляемый статус `unknown`, `participant`, `left`, `excluded` или `bot`, по умолчанию `unknown`;
 - nullable `participant_id`, автоматически заполняемый только по существующей Telegram external identity;
 - `observed_at` — время наблюдения snapshot.
 

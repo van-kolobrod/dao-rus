@@ -36,6 +36,19 @@ export function telegramIngestionConfig() {
   };
 }
 
+export function prototypeAdminParticipantIds(): Set<string> {
+  return new Set(
+    (env("ADMIN_PARTICIPANT_IDS") ?? "")
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+export function hasPrototypeAdminAccess(participantId: string): boolean {
+  return prototypeAdminParticipantIds().has(participantId.toLowerCase());
+}
+
 export function defaultMembershipStatus(): MembershipStatus {
   const value = (env("DEFAULT_MEMBERSHIP_STATUS") ?? "candidate") as MembershipStatus;
   const allowed: MembershipStatus[] = [

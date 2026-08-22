@@ -108,6 +108,63 @@ dd { margin: 6px 0 0; }
   .profileEdit > div { align-items: stretch; flex-direction: column; }
 }
 
+.registryShell { display: block; }
+.registryPage { width: min(1400px, 100%); margin: 0 auto; }
+.registryWarning {
+  margin: 24px 0;
+  padding: 12px 14px;
+  border: 1px solid #c5a968;
+  border-radius: 10px;
+  background: #fff8df;
+  font-size: 13px;
+}
+.registryFilters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+  margin: 24px 0;
+}
+.registryFilters label { display: grid; gap: 6px; min-width: 180px; }
+.registryFilters label:first-child { flex: 1; min-width: 260px; }
+.registryFilters span { color: var(--muted); font-size: 12px; }
+.registryFilters input,
+.registryFilters select,
+.registryAction select {
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #fff;
+  color: var(--ink);
+}
+.registryTableWrap { overflow-x: auto; margin-top: 22px; }
+.registryTable { width: 100%; border-collapse: collapse; font-size: 14px; }
+.registryTable th,
+.registryTable td { border-top: 1px solid var(--line); padding: 12px 10px; text-align: left; vertical-align: top; }
+.registryTable th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+.registryTable td:first-child { min-width: 190px; }
+.registryTable td small,
+.registryTable td code { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; }
+.registryAction { display: grid; gap: 7px; min-width: 285px; }
+.registryAction > label { color: var(--muted); font-size: 12px; font-weight: 600; }
+.registryAction > div { display: flex; gap: 6px; }
+.registryAction select { flex: 1; min-width: 0; }
+.registryAction button {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 0 10px;
+}
+.registryAction button:disabled,
+.registryAction select:disabled { cursor: wait; opacity: .65; }
+.registryFeedback { min-height: 16px; font-size: 12px; font-weight: 600; }
+.registryFeedback.success { color: var(--accent); }
+.registryFeedback.notice { color: var(--muted); }
+.registryFeedback.error { color: #9b3f36; }
+
 .metrics small,
 .activitySummary small {
   display: block;

@@ -3,17 +3,12 @@ import { resolveTelegramParticipant, type TelegramIdentityProfile } from "./iden
 
 const mocks = vi.hoisted(() => ({
   connect: vi.fn(),
-  defaultMembershipStatus: vi.fn(() => "candidate"),
 }));
 
 vi.mock("./db", () => ({
   pool: {
     connect: mocks.connect,
   },
-}));
-
-vi.mock("./config", () => ({
-  defaultMembershipStatus: mocks.defaultMembershipStatus,
 }));
 
 import { PostgresIdentityStore } from "./postgres-identity-store";
@@ -69,7 +64,7 @@ class FakeIdentityClient {
           {
             id: participantId,
             display_name: profile.displayName,
-            membership_status: "candidate",
+            membership_status: "none",
             created_at: "2026-08-22T00:00:00.000Z",
           },
         ],
@@ -115,7 +110,13 @@ describe("PostgresIdentityStore Telegram roster link", () => {
     );
 
     expect(participant.id).toBe(participantId);
+    expect(participant.membershipStatus).toBe("none");
     expect(client.rosterParticipantId).toBe(participantId);
+    const participantInsert = client.queries.find(({ text }) =>
+      text.includes("INSERT INTO participants")
+    );
+    expect(participantInsert?.text).toContain("VALUES ($1, 'none')");
+    expect(participantInsert?.values).toEqual([profile.displayName]);
     const rosterUpdate = client.queries.find(({ text }) =>
       text.includes("UPDATE telegram_roster_entries"),
     );

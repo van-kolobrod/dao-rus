@@ -305,6 +305,94 @@ export type ParticipantRegistryUpdateResult = {
   newValue: string;
 };
 
+type CanonicalMembershipStatus = "participant" | "left" | "excluded";
+
+function isCanonicalMembershipStatus(
+  value: string,
+): value is CanonicalMembershipStatus {
+  return value === "participant" || value === "left" || value === "excluded";
+}
+
+async function assertCanonicalMembershipWithClient(
+  client: ParticipantRegistryDatabaseClient,
+  participantId: string | null,
+  expectedStatus: CanonicalMembershipStatus,
+): Promise<void> {
+  if (!participantId) {
+    throw new ParticipantRegistryIntegrityError(
+      `Roster status ${expectedStatus} requires a canonical Participant`,
+    );
+  }
+
+  const participantResult = await client.query(
+    `SELECT membership_status
+       FROM participants
+      WHERE id = $1
+      FOR UPDATE`,
+    [participantId],
+  );
+  if (!participantResult.rowCount) {
+    throw new ParticipantRegistryIntegrityError(
+      `Canonical Participant ${participantId} does not exist`,
+    );
+  }
+
+  const actualStatus = String(participantResult.rows[0].membership_status);
+  if (actualStatus !== expectedStatus) {
+    throw new ParticipantRegistryIntegrityError(
+      `Roster status ${expectedStatus} conflicts with canonical Participant ${participantId} status ${actualStatus}`,
+    );
+  }
+}
+
+async function updateCanonicalMembershipWithClient(
+  client: ParticipantRegistryDatabaseClient,
+  participantId: string | null,
+  oldRosterStatus: string,
+  newStatus: CanonicalMembershipStatus,
+): Promise<void> {
+  if (!participantId) {
+    throw new ParticipantRegistryIntegrityError(
+      `Membership transition ${oldRosterStatus} -> ${newStatus} requires a canonical Participant`,
+    );
+  }
+
+  const participantResult = await client.query(
+    `SELECT membership_status
+       FROM participants
+      WHERE id = $1
+      FOR UPDATE`,
+    [participantId],
+  );
+  if (!participantResult.rowCount) {
+    throw new ParticipantRegistryIntegrityError(
+      `Canonical Participant ${participantId} does not exist`,
+    );
+  }
+
+  const oldCanonicalStatus = String(
+    participantResult.rows[0].membership_status,
+  );
+  if (
+    isCanonicalMembershipStatus(oldRosterStatus) &&
+    oldCanonicalStatus !== oldRosterStatus
+  ) {
+    throw new ParticipantRegistryIntegrityError(
+      `Roster status ${oldRosterStatus} conflicts with canonical Participant ${participantId} status ${oldCanonicalStatus}`,
+    );
+  }
+
+  if (oldCanonicalStatus !== newStatus) {
+    await client.query(
+      `UPDATE participants
+          SET membership_status = $2,
+              updated_at = now()
+        WHERE id = $1`,
+      [participantId, newStatus],
+    );
+  }
+}
+
 async function bindParticipantForMembership(
   client: ParticipantRegistryDatabaseClient,
   roster: Record<string, unknown>,
@@ -464,6 +552,18 @@ export async function updateParticipantRegistryWithDatabase(
 
     const oldValue = String(current.rows[0][field]);
     if (oldValue === normalizedNewValue) {
+      if (
+        field === "membership_status" &&
+        isCanonicalMembershipStatus(normalizedNewValue)
+      ) {
+        await assertCanonicalMembershipWithClient(
+          client,
+          current.rows[0].participant_id
+            ? String(current.rows[0].participant_id)
+            : null,
+          normalizedNewValue,
+        );
+      }
       await client.query("COMMIT");
       return { changed: false, field, oldValue, newValue: normalizedNewValue };
     }
@@ -476,6 +576,18 @@ export async function updateParticipantRegistryWithDatabase(
         client,
         current.rows[0],
         telegramUserId,
+      );
+    }
+
+    if (
+      field === "membership_status" &&
+      isCanonicalMembershipStatus(normalizedNewValue)
+    ) {
+      await updateCanonicalMembershipWithClient(
+        client,
+        membershipParticipantId,
+        oldValue,
+        normalizedNewValue,
       );
     }
 

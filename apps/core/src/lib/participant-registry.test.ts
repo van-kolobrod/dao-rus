@@ -22,6 +22,7 @@ class FakeClient implements ParticipantRegistryDatabaseClient {
   identityVerification: string;
   rosterParticipantId: string | null;
   identityParticipantId: string | null;
+  canonicalMembershipStatus: string;
   persistedMembershipEvents: string[] = [];
   private pendingMembershipEvents: string[] = [];
   private transactionState: {
@@ -29,6 +30,7 @@ class FakeClient implements ParticipantRegistryDatabaseClient {
     identityVerification: string;
     rosterParticipantId: string | null;
     identityParticipantId: string | null;
+    canonicalMembershipStatus: string;
   } | null = null;
 
   constructor(
@@ -40,12 +42,17 @@ class FakeClient implements ParticipantRegistryDatabaseClient {
       missing?: boolean;
       failRegistryEvent?: boolean;
       failMembershipEvent?: boolean;
+      canonicalMembershipStatus?: string;
     } = {},
   ) {
     this.membershipStatus = options.membershipStatus ?? "unknown";
     this.identityVerification = options.identityVerification ?? "unverified";
     this.rosterParticipantId = options.rosterParticipantId ?? null;
     this.identityParticipantId = options.identityParticipantId ?? null;
+    this.canonicalMembershipStatus = options.canonicalMembershipStatus ??
+      (["participant", "left", "excluded"].includes(this.membershipStatus)
+        ? this.membershipStatus
+        : "none");
   }
 
   async query(text: string, values?: unknown[]) {
@@ -57,6 +64,7 @@ class FakeClient implements ParticipantRegistryDatabaseClient {
         identityVerification: this.identityVerification,
         rosterParticipantId: this.rosterParticipantId,
         identityParticipantId: this.identityParticipantId,
+        canonicalMembershipStatus: this.canonicalMembershipStatus,
       };
       this.pendingMembershipEvents = [];
       return { rowCount: 1, rows: [] };
@@ -75,13 +83,28 @@ class FakeClient implements ParticipantRegistryDatabaseClient {
         this.identityVerification = this.transactionState.identityVerification;
         this.rosterParticipantId = this.transactionState.rosterParticipantId;
         this.identityParticipantId = this.transactionState.identityParticipantId;
+        this.canonicalMembershipStatus =
+          this.transactionState.canonicalMembershipStatus;
       }
       this.pendingMembershipEvents = [];
       this.transactionState = null;
       return { rowCount: 1, rows: [] };
     }
 
-    if (text.includes("SELECT membership_status")) {
+    if (
+      text.includes("SELECT membership_status") &&
+      text.includes("FROM participants")
+    ) {
+      return {
+        rowCount: 1,
+        rows: [{ membership_status: this.canonicalMembershipStatus }],
+      };
+    }
+
+    if (
+      text.includes("SELECT membership_status") &&
+      text.includes("FROM telegram_roster_entries")
+    ) {
       if (this.options.missing) return { rowCount: 0, rows: [] };
       return {
         rowCount: 1,
@@ -109,7 +132,16 @@ class FakeClient implements ParticipantRegistryDatabaseClient {
     }
 
     if (text.includes("INSERT INTO participants")) {
+      this.canonicalMembershipStatus = "participant";
       return { rowCount: 1, rows: [{ id: createdParticipantId }] };
+    }
+
+    if (
+      text.includes("UPDATE participants") &&
+      text.includes("SET membership_status")
+    ) {
+      this.canonicalMembershipStatus = String(values?.[1]);
+      return { rowCount: 1, rows: [] };
     }
 
     if (text.includes("INSERT INTO external_identities")) {
@@ -211,6 +243,24 @@ describe("Participant Registry migrations", () => {
     expect(migration).toContain("external_identities(external_user_id)");
     expect(migration).toContain("provider = 'telegram'");
   });
+
+  it("repairs recognized candidates and removes legacy states without inventing history", async () => {
+    const migration = await readFile(
+      new URL("../../migrations/008_canonical_membership.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain("membership_status SET DEFAULT 'none'");
+    expect(migration).toContain("WHERE membership_status = 'candidate'");
+    expect(migration).toContain("membership_status = 'suspended'");
+    expect(migration).toContain(
+      "e.event_type = 'participant_registry.membership_status_changed'",
+    );
+    expect(migration).toContain(
+      "membership_status IN ('none', 'participant', 'left', 'excluded')",
+    );
+    expect(migration).toContain("count(DISTINCT r.membership_status) > 1");
+    expect(migration).not.toContain("INSERT INTO events");
+  });
 });
 
 describe("updateParticipantRegistryWithDatabase", () => {
@@ -234,6 +284,7 @@ describe("updateParticipantRegistryWithDatabase", () => {
     expect(queryCount(client, "INSERT INTO external_identities")).toBe(1);
     expect(client.rosterParticipantId).toBe(createdParticipantId);
     expect(client.identityParticipantId).toBe(createdParticipantId);
+    expect(client.canonicalMembershipStatus).toBe("participant");
     expect(client.identityVerification).toBe("unverified");
 
     const participantInsert = client.queries.find(({ text }) =>
@@ -301,6 +352,7 @@ describe("updateParticipantRegistryWithDatabase", () => {
       );
 
       expect(client.rosterParticipantId).toBe(existingParticipantId);
+      expect(client.canonicalMembershipStatus).toBe(newStatus);
       expect(membershipEvent(client)?.values?.slice(0, 2)).toEqual([
         eventType,
         existingParticipantId,
@@ -362,7 +414,32 @@ describe("updateParticipantRegistryWithDatabase", () => {
     expect(queryCount(client, "INSERT INTO external_identities")).toBe(0);
     expect(queryCount(client, "INSERT INTO events")).toBe(0);
     expect(client.persistedMembershipEvents).toEqual([]);
+    expect(client.canonicalMembershipStatus).toBe("participant");
     expect(client.queries.at(-1)?.text).toBe("COMMIT");
+  });
+
+  it("does not silently accept a no-op when canonical membership conflicts", async () => {
+    const client = new FakeClient({
+      membershipStatus: "participant",
+      canonicalMembershipStatus: "left",
+      rosterParticipantId: existingParticipantId,
+      identityParticipantId: existingParticipantId,
+    });
+
+    await expect(
+      updateParticipantRegistryWithDatabase(
+        fakeDatabase(client),
+        adminParticipantId,
+        telegramUserId,
+        "membership_status",
+        "participant",
+      ),
+    ).rejects.toThrow("conflicts with canonical Participant");
+
+    expect(queryCount(client, "INSERT INTO events")).toBe(0);
+    expect(client.membershipStatus).toBe("participant");
+    expect(client.canonicalMembershipStatus).toBe("left");
+    expect(client.queries.at(-1)?.text).toBe("ROLLBACK");
   });
 
   it("reuses the same binding when an already known account is moved to participant again", async () => {
@@ -452,6 +529,7 @@ describe("updateParticipantRegistryWithDatabase", () => {
     expect(client.queries.some(({ text }) => text === "COMMIT")).toBe(false);
     expect(client.persistedMembershipEvents).toEqual([]);
     expect(client.membershipStatus).toBe("unknown");
+    expect(client.canonicalMembershipStatus).toBe("none");
   });
 
   it("rolls back status and registry audit when membership history fails", async () => {
@@ -476,6 +554,7 @@ describe("updateParticipantRegistryWithDatabase", () => {
     expect(membershipEvent(client)).toBeDefined();
     expect(client.queries.at(-1)?.text).toBe("ROLLBACK");
     expect(client.membershipStatus).toBe("participant");
+    expect(client.canonicalMembershipStatus).toBe("participant");
     expect(client.persistedMembershipEvents).toEqual([]);
   });
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ProposalEligibilityError,
   ProposalValidationError,
   createProposalWithDatabase,
   type ProposalDatabase,
@@ -13,10 +14,20 @@ class FakeClient implements ProposalDatabaseClient {
   queries: Array<{ text: string; values?: unknown[] }> = [];
   released = false;
 
-  constructor(private readonly failEvent = false) {}
+  constructor(
+    private readonly failEvent = false,
+    private readonly membershipStatus = "participant",
+  ) {}
 
   async query(text: string, values?: unknown[]) {
     this.queries.push({ text, values });
+
+    if (text.includes("SELECT membership_status")) {
+      return {
+        rowCount: 1,
+        rows: [{ membership_status: this.membershipStatus }],
+      };
+    }
 
     if (text.includes("INSERT INTO proposals")) {
       return {
@@ -89,11 +100,38 @@ describe("createProposalWithDatabase", () => {
       title: "Первое предложение",
     });
     expect(client.queries[0].text).toBe("BEGIN");
-    expect(client.queries[1].text).toContain("INSERT INTO proposals");
-    expect(client.queries[2].text).toContain("INSERT INTO events");
-    expect(client.queries[3].text).toBe("COMMIT");
+    expect(client.queries[1].text).toContain("SELECT membership_status");
+    expect(client.queries[1].text).toContain("FOR SHARE");
+    expect(client.queries[2].text).toContain("INSERT INTO proposals");
+    expect(client.queries[3].text).toContain("INSERT INTO events");
+    expect(client.queries[4].text).toBe("COMMIT");
     expect(client.released).toBe(true);
   });
+
+  it.each(["left", "excluded"])(
+    "denies Proposal creation for an authenticated %s Participant",
+    async (membershipStatus) => {
+      const client = new FakeClient(false, membershipStatus);
+
+      await expect(
+        createProposalWithDatabase(
+          fakeDatabase(client),
+          authorId,
+          "Заголовок",
+          "Текст",
+        ),
+      ).rejects.toBeInstanceOf(ProposalEligibilityError);
+
+      expect(
+        client.queries.some(({ text }) => text.includes("INSERT INTO proposals")),
+      ).toBe(false);
+      expect(
+        client.queries.some(({ text }) => text.includes("INSERT INTO events")),
+      ).toBe(false);
+      expect(client.queries.at(-1)?.text).toBe("ROLLBACK");
+      expect(client.released).toBe(true);
+    },
+  );
 
   it.each([
     ["title", "   ", "Текст"],

@@ -1,3 +1,5 @@
+import { canCreateProposal } from "./eligibility";
+
 export type ProposalStatus = "open";
 
 export type Proposal = {
@@ -36,6 +38,13 @@ export class ProposalValidationError extends Error {
   }
 }
 
+export class ProposalEligibilityError extends Error {
+  constructor() {
+    super("Current Participant membership does not allow Proposal creation");
+    this.name = "ProposalEligibilityError";
+  }
+}
+
 function normalizeRequiredText(value: unknown, field: ProposalField): string {
   if (typeof value !== "string" || !value.trim()) {
     throw new ProposalValidationError(field);
@@ -67,6 +76,24 @@ export async function createProposalWithDatabase(
 
   try {
     await client.query("BEGIN");
+
+    const participantResult = await client.query(
+      `SELECT membership_status
+         FROM participants
+        WHERE id = $1
+        FOR SHARE`,
+      [authorParticipantId],
+    );
+    if (
+      !participantResult.rowCount ||
+      !canCreateProposal({
+        membershipStatus: String(
+          participantResult.rows[0].membership_status,
+        ),
+      })
+    ) {
+      throw new ProposalEligibilityError();
+    }
 
     const proposalResult = await client.query(
       `INSERT INTO proposals(author_participant_id, title, body, status)

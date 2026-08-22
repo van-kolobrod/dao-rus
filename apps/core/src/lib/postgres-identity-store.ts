@@ -1,5 +1,4 @@
 import type { PoolClient } from "pg";
-import { defaultMembershipStatus } from "./config";
 import { pool } from "./db";
 import {
   TelegramIdentityIntegrityError,
@@ -104,9 +103,9 @@ export class PostgresIdentityStore implements IdentityStore {
 
       const participantResult = await client.query(
         `INSERT INTO participants(display_name, membership_status)
-         VALUES ($1, $2)
+         VALUES ($1, 'none')
          RETURNING id, display_name, membership_status, created_at`,
-        [profile.displayName, defaultMembershipStatus()],
+        [profile.displayName],
       );
       const participant = participantFromRow(participantResult.rows[0]);
 

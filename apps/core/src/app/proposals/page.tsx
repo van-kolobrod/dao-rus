@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { LocalDateTime } from "@/components/local-date-time";
+import { canCreateProposal } from "@/lib/eligibility";
 import { listProposals } from "@/lib/proposals";
 import { getCurrentParticipant } from "@/lib/session";
 
@@ -14,6 +15,7 @@ const createMessages: Record<string, string> = {
   created: "Предложение создано.",
   empty_title: "Введите непустой заголовок.",
   empty_body: "Введите непустой текст предложения.",
+  not_eligible: "Создавать предложения может только действующий участник ДАО.",
 };
 
 export default async function ProposalsPage({ searchParams }: ProposalsPageProps) {
@@ -24,7 +26,11 @@ export default async function ProposalsPage({ searchParams }: ProposalsPageProps
   const createMessage = params.proposal_create
     ? createMessages[params.proposal_create]
     : null;
-  const hasError = params.proposal_create?.startsWith("empty_") ?? false;
+  const hasError = params.proposal_create
+    ? params.proposal_create.startsWith("empty_") ||
+      params.proposal_create === "not_eligible"
+    : false;
+  const proposalCreationAllowed = canCreateProposal(participant);
 
   return (
     <main className="shell">
@@ -40,21 +46,29 @@ export default async function ProposalsPage({ searchParams }: ProposalsPageProps
           </Link>
         </div>
 
-        <form className="proposalForm" action="/api/proposals" method="post">
-          <label htmlFor="proposal-title">Заголовок</label>
-          <input id="proposal-title" name="title" required />
+        {proposalCreationAllowed ? (
+          <form className="proposalForm" action="/api/proposals" method="post">
+            <label htmlFor="proposal-title">Заголовок</label>
+            <input id="proposal-title" name="title" required />
 
-          <label htmlFor="proposal-body">Текст предложения</label>
-          <textarea id="proposal-body" name="body" rows={6} required />
+            <label htmlFor="proposal-body">Текст предложения</label>
+            <textarea id="proposal-body" name="body" rows={6} required />
 
-          <button className="button primary" type="submit">
-            Создать предложение
-          </button>
+            <button className="button primary" type="submit">
+              Создать предложение
+            </button>
 
-          {createMessage ? (
-            <p className={hasError ? "formError" : "formNotice"}>{createMessage}</p>
-          ) : null}
-        </form>
+            {createMessage ? (
+              <p className={hasError ? "formError" : "formNotice"}>
+                {createMessage}
+              </p>
+            ) : null}
+          </form>
+        ) : (
+          <p className="formNotice">
+            Создавать предложения может только действующий участник ДАО.
+          </p>
+        )}
 
         <section className="proposalList">
           <h2>Все предложения</h2>

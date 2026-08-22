@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { appBaseUrl } from "@/lib/config";
-import { createProposal, ProposalValidationError } from "@/lib/proposals";
+import { canCreateProposal } from "@/lib/eligibility";
+import {
+  createProposal,
+  ProposalEligibilityError,
+  ProposalValidationError,
+} from "@/lib/proposals";
 import { getCurrentParticipant } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -16,6 +21,9 @@ export async function POST(request: NextRequest) {
   if (!participant) {
     return NextResponse.redirect(new URL("/", appBaseUrl()), 303);
   }
+  if (!canCreateProposal(participant)) {
+    return proposalsRedirect("not_eligible");
+  }
 
   const formData = await request.formData();
 
@@ -27,6 +35,9 @@ export async function POST(request: NextRequest) {
     );
     return proposalsRedirect("created");
   } catch (error) {
+    if (error instanceof ProposalEligibilityError) {
+      return proposalsRedirect("not_eligible");
+    }
     if (error instanceof ProposalValidationError) {
       return proposalsRedirect(`empty_${error.field}`);
     }

@@ -12,9 +12,8 @@ import { getCurrentParticipant } from "@/lib/session";
 export const dynamic = "force-dynamic";
 
 const statusLabels: Record<string, string> = {
-  candidate: "кандидат",
+  none: "членство не установлено",
   participant: "участник",
-  suspended: "приостановлен",
   excluded: "исключён",
   left: "вышел",
 };

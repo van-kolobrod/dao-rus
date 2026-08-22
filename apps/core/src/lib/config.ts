@@ -1,7 +1,6 @@
 export type MembershipStatus =
-  | "candidate"
+  | "none"
   | "participant"
-  | "suspended"
   | "excluded"
   | "left";
 
@@ -47,18 +46,6 @@ export function prototypeAdminParticipantIds(): Set<string> {
 
 export function hasPrototypeAdminAccess(participantId: string): boolean {
   return prototypeAdminParticipantIds().has(participantId.toLowerCase());
-}
-
-export function defaultMembershipStatus(): MembershipStatus {
-  const value = (env("DEFAULT_MEMBERSHIP_STATUS") ?? "candidate") as MembershipStatus;
-  const allowed: MembershipStatus[] = [
-    "candidate",
-    "participant",
-    "suspended",
-    "excluded",
-    "left",
-  ];
-  return allowed.includes(value) ? value : "candidate";
 }
 
 export function sessionTtlDays(): number {

@@ -35,7 +35,7 @@ class FakeStore implements IdentityStore {
     this.participant = {
       id: "00000000-0000-0000-0000-000000000001",
       displayName: profile.displayName,
-      membershipStatus: "candidate",
+      membershipStatus: "none",
       createdAt: new Date("2026-08-21T00:00:00Z"),
     };
     return this.participant;

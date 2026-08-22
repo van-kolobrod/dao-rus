@@ -339,12 +339,51 @@ Telegram presence не является активностью в ДАО и не
 
 До первого Telegram OIDC login roster-created identity использует технический `provider_subject`. При последующем login Core находит её по Telegram user ID, сохраняет фактический OIDC `sub` и создаёт сессию для того же Participant UUID.
 
+#### Canonical Membership & Eligibility v0.1
+
+`participants.membership_status` является единственным canonical source of truth
+для текущего институционального членства и имеет только значения `none`,
+`participant`, `left`, `excluded`. Техническая запись Participant является
+долговременным каноническим субъектом Core; само её наличие не означает членство
+DAO. Поле
+`telegram_roster_entries.membership_status` остаётся Telegram-oriented
+административным представлением: у несвязанной записи оно позволяет хранить
+локальную классификацию `unknown` или `bot` и начать процедуру признания. После
+связи с Participant переходы `participant`, `left` и `excluded` атомарно
+синхронизируются с каноническим состоянием Participant.
+
+`candidate` не является membership state: он относится к будущему отдельному
+процессу `MembershipApplication`, который в этом vertical slice не реализован.
+Первый Telegram OIDC/demo login создаёт Participant с `membership_status = none`;
+Telegram join, presence, roster import и login сами по себе не создают членство.
+
+Миграция `008_canonical_membership.sql` переносит legacy `candidate` в
+институциональное roster-состояние только при наличии соответствующего explicit
+registry recognition audit event. Остальные legacy `candidate` становятся
+`none`. Membership History задним числом не создаётся. Противоречащие
+roster-состояния, конфликт с уже установленным canonical state или обнаруженный
+legacy `suspended` останавливают миграцию вместо молчаливой интерпретации данных.
+
+Admission является отдельным институциональным решением. В действующей практике
+положительное рассмотрение заявки завершается выдачей invite и признанием
+членства. Спорная заявка может обсуждаться действующими участниками; неучастие в
+обсуждении не записывается как голос или содержательное согласие, а означает
+только отсутствие заявленного возражения против решения участвующими в
+рассмотрении.
+
+Eligibility не хранится отдельным флагом. Для каждого защищённого действия она
+вычисляется сервером из canonical Participant state. В v0.1 первым таким
+действием является создание Proposal: его может выполнить только Participant со
+статусом `participant`. `none`, `left` и `excluded` не могут создавать Proposal,
+но их существующие сессии не удаляются: субъект Core сохраняет identity и может
+видеть допустимые профиль и историю.
+
 #### Membership History v0.1
 
-`telegram_roster_entries.membership_status` остаётся текущим административным
-состоянием. Каноническая биография членства хранится append-only событиями в уже
-существующей таблице `events`; отдельная таблица истории не создаётся, чтобы не
-появился второй источник истины.
+Текущее каноническое состояние хранится в `participants.membership_status`, а
+каноническая биография членства — append-only событиями в уже существующей
+таблице `events`. Отдельная таблица истории не создаётся, чтобы не появился
+второй источник истины.
 
 Ручные переходы Participant Registry создают следующие доменные события:
 
@@ -389,10 +428,13 @@ No-op сохранение не является изменением состо
 
 - `id` — UUID;
 - `display_name`;
-- `membership_status`;
+- `membership_status` — `none`, `participant`, `left` или `excluded`;
 - `created_at`.
 
-Новая identity при самостоятельном Telegram OIDC login по умолчанию получает статус `candidate`. Это можно изменить через `DEFAULT_MEMBERSHIP_STATUS`. Исключение — Participant, созданный Membership Binding после явного административного признания roster entry участником: он получает статус `participant`.
+Новая identity при самостоятельном Telegram OIDC/demo login получает статус
+`none`. Это создаёт канонический субъект Core, но не членство DAO. Participant,
+созданный Membership Binding вследствие явного административного признания
+roster entry участником, получает статус `participant`.
 
 ### `external_identities`
 
@@ -431,7 +473,7 @@ Append-oriented журнал значимых событий. Пока:
 - `telegram_user_id` — первичный ключ;
 - `username`, `display_name`, `is_bot`;
 - `identity_verification` — `verified` или `unverified`, по умолчанию `unverified`;
-- `membership_status` — независимый управляемый статус `unknown`, `participant`, `left`, `excluded` или `bot`, по умолчанию `unknown`;
+- `membership_status` — Telegram-oriented административная классификация `unknown`, `participant`, `left`, `excluded` или `bot`, по умолчанию `unknown`; после связи институциональные значения синхронизируются с canonical Participant membership;
 - nullable `participant_id`, заполняемый по существующей Telegram identity или при явном Membership Binding;
 - `telegram_presence_status` — доступная категория Telegram presence;
 - nullable `telegram_last_seen_at` — только точный `was_online`, без аппроксимации privacy-категорий;
@@ -464,7 +506,7 @@ Legacy bridge был переходником между старым Telegram L
 
 Сначала убедиться, что:
 
-1. demo-login создаёт Participant;
+1. demo-login создаёт Participant с `membership_status = none`;
 2. повторный вход использует тот же Participant;
 3. `/profile` работает;
 4. в `events` появляются `participant.created` и `participant.logged_in`;
@@ -476,7 +518,7 @@ Legacy bridge был переходником между старым Telegram L
 
 ## 10. Проверка Proposal v0.1
 
-1. авторизованный Participant открывает `/proposals`;
+1. авторизованный Participant с canonical `membership_status = 'participant'` открывает `/proposals`;
 2. создаёт предложение с непустыми заголовком и текстом;
 3. предложение появляется первым в списке;
 4. в `events` появляется `proposal.created` с ID и заголовком предложения;

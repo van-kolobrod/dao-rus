@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from telethon import TelegramClient
+from telethon.tl import types
 
 
 CORE_DIR = Path(__file__).resolve().parents[2]
@@ -60,11 +61,32 @@ def chat_reference(value: str):
         return value
 
 
+def utc_iso(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def serialize_presence(status) -> tuple[str, str | None]:
+    if isinstance(status, types.UserStatusOnline):
+        return "online", None
+    if isinstance(status, types.UserStatusOffline) and status.was_online:
+        return "exact", utc_iso(status.was_online)
+    if isinstance(status, types.UserStatusRecently):
+        return "recently", None
+    if isinstance(status, types.UserStatusLastWeek):
+        return "last_week", None
+    if isinstance(status, types.UserStatusLastMonth):
+        return "last_month", None
+    return "unknown", None
+
+
 async def export_roster(args: argparse.Namespace) -> Path:
     LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     args.session.parent.mkdir(parents=True, exist_ok=True)
 
     observed_at = datetime.now(timezone.utc)
+    observed_at_iso = utc_iso(observed_at)
     output = args.output or LOCAL_DIR / (
         f"telegram-roster-{observed_at.strftime('%Y%m%dT%H%M%SZ')}.json"
     )
@@ -81,18 +103,24 @@ async def export_roster(args: argparse.Namespace) -> Path:
                 part for part in (user.first_name, user.last_name) if part
             ).strip()
             display_name = display_name or user.username or str(user.id)
+            presence_status, last_seen_at = serialize_presence(
+                getattr(user, "status", None)
+            )
             entries.append(
                 {
                     "telegram_user_id": str(user.id),
                     "username": user.username,
                     "display_name": display_name,
                     "is_bot": bool(user.bot),
+                    "telegram_presence_status": presence_status,
+                    "telegram_last_seen_at": last_seen_at,
+                    "telegram_presence_observed_at": observed_at_iso,
                 }
             )
 
         entries.sort(key=lambda entry: int(entry["telegram_user_id"]))
         snapshot = {
-            "observed_at": observed_at.isoformat().replace("+00:00", "Z"),
+            "observed_at": observed_at_iso,
             "chat": {
                 "id": str(chat.id),
                 "title": getattr(chat, "title", None),

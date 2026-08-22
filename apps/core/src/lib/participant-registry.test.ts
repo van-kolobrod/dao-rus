@@ -2,7 +2,9 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   listParticipantRegistryWithDatabase,
+  sortParticipantRegistryEntries,
   updateParticipantRegistryWithDatabase,
+  type ParticipantRegistryEntry,
   type ParticipantRegistryDatabase,
   type ParticipantRegistryDatabaseClient,
 } from "./participant-registry";
@@ -365,6 +367,9 @@ describe("listParticipantRegistryWithDatabase", () => {
               participant_id: adminParticipantId,
               participant_display_name: "Core profile",
               observed_at: "2026-08-21T15:15:00.000Z",
+              telegram_presence_status: "recently",
+              telegram_last_seen_at: null,
+              telegram_presence_observed_at: "2026-08-21T15:15:00.000Z",
             }],
           };
         },
@@ -373,18 +378,98 @@ describe("listParticipantRegistryWithDatabase", () => {
         search: "  184229  ",
         membershipStatus: "participant",
         identityVerification: "unverified",
+        telegramPresenceStatus: "recently",
+        sort: "presence_oldest",
       },
     );
 
-    expect(queries[0].values).toEqual(["184229", "participant", "unverified"]);
+    expect(queries[0].values).toEqual([
+      "184229",
+      "participant",
+      "unverified",
+      "recently",
+    ]);
     expect(queries[0].text).toContain("r.display_name ILIKE");
     expect(queries[0].text).toContain("r.username");
     expect(queries[0].text).toContain("r.telegram_user_id::text");
+    expect(queries[0].text).toContain("r.telegram_presence_status = $4");
     expect(entries[0]).toMatchObject({
       telegramUserId,
       membershipStatus: "participant",
       identityVerification: "unverified",
       participantId: adminParticipantId,
+      telegramPresenceStatus: "recently",
     });
+  });
+});
+
+function registryEntry(
+  telegramUserId: string,
+  displayName: string,
+  telegramPresenceStatus: ParticipantRegistryEntry["telegramPresenceStatus"],
+  telegramLastSeenAt: string | null = null,
+): ParticipantRegistryEntry {
+  return {
+    telegramUserId,
+    username: null,
+    displayName,
+    isBot: false,
+    membershipStatus: "unknown",
+    identityVerification: "unverified",
+    participantId: null,
+    participantDisplayName: null,
+    observedAt: new Date("2026-08-22T00:00:00.000Z"),
+    telegramPresenceStatus,
+    telegramLastSeenAt: telegramLastSeenAt ? new Date(telegramLastSeenAt) : null,
+    telegramPresenceObservedAt: new Date("2026-08-22T00:00:00.000Z"),
+  };
+}
+
+describe("sortParticipantRegistryEntries", () => {
+  const now = new Date("2026-08-22T12:00:00.000Z");
+  const entries = [
+    registryEntry("1", "Неизвестный", "unknown"),
+    registryEntry("2", "Онлайн", "online"),
+    registryEntry("3", "Недавно", "recently"),
+    registryEntry("4", "Неделя", "last_week"),
+    registryEntry("5", "Месяц", "last_month"),
+    registryEntry("6", "Точное старое", "exact", "2026-06-01T00:00:00.000Z"),
+    registryEntry("7", "Точное свежее", "exact", "2026-08-22T10:00:00.000Z"),
+  ];
+
+  it("groups oldest presence without treating unknown as inactive", () => {
+    const result = sortParticipantRegistryEntries(entries, "presence_oldest", now);
+
+    expect(result.slice(0, 2).map((entry) => entry.telegramUserId)).toEqual([
+      "6",
+      "5",
+    ]);
+    expect(result.at(-1)?.telegramPresenceStatus).toBe("unknown");
+  });
+
+  it("groups newest presence while keeping unknown separate", () => {
+    const result = sortParticipantRegistryEntries(entries, "presence_newest", now);
+
+    expect(result[0].telegramPresenceStatus).toBe("online");
+    expect(result.at(-1)?.telegramPresenceStatus).toBe("unknown");
+    expect(result.findIndex((entry) => entry.telegramUserId === "7")).toBeLessThan(
+      result.findIndex((entry) => entry.telegramUserId === "4"),
+    );
+  });
+
+  it("orders exact timestamps inside the same broad recency band", () => {
+    const exactEntries = [
+      registryEntry("8", "Позже", "exact", "2026-08-01T00:00:00.000Z"),
+      registryEntry("9", "Раньше", "exact", "2026-07-25T00:00:00.000Z"),
+    ];
+
+    expect(
+      sortParticipantRegistryEntries(exactEntries, "presence_oldest", now)
+        .map((entry) => entry.telegramUserId),
+    ).toEqual(["9", "8"]);
+    expect(
+      sortParticipantRegistryEntries(exactEntries, "presence_newest", now)
+        .map((entry) => entry.telegramUserId),
+    ).toEqual(["8", "9"]);
   });
 });

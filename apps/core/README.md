@@ -252,7 +252,16 @@ Snapshot содержит только:
 - `username`;
 - `display_name`;
 - `is_bot`;
-- единый `observed_at` для снимка.
+- доступный Telegram `UserStatus`, нормализованный в `online`, `exact`,
+  `recently`, `last_week`, `last_month` или `unknown`;
+- точный `telegram_last_seen_at` только для `UserStatusOffline.was_online`;
+- единый `observed_at` и `telegram_presence_observed_at` для снимка.
+
+`UserStatusOnline` сохраняется как `online`; `UserStatusOffline.was_online` — как
+`exact` с фактическим timestamp; privacy-категории `UserStatusRecently`,
+`UserStatusLastWeek` и `UserStatusLastMonth` сохраняются без придуманной даты.
+Отсутствующий или неизвестный status становится `unknown`, что означает только
+отсутствие доступной информации.
 
 Exporter не читает сообщения и не сохраняет телефонные номера.
 
@@ -268,7 +277,7 @@ $snapshot = (Get-ChildItem .local/telegram/telegram-roster-*.json |
 docker compose exec web npm run telegram:roster:import -- "/app/.local/telegram/$snapshot"
 ```
 
-Импорт валидирует snapshot до подключения к PostgreSQL и выполняет весь upsert одной транзакцией. Конфликт разрешается по `telegram_user_id`. Повторный импорт обновляет только `username`, `display_name`, `is_bot` и `observed_at`; более старый snapshot не перезаписывает новое наблюдение.
+Импорт валидирует snapshot до подключения к PostgreSQL и выполняет весь upsert одной транзакцией. Конфликт разрешается по `telegram_user_id`. Повторный импорт обновляет roster-поля по более новому `observed_at`, а presence — отдельно только по более новому `telegram_presence_observed_at`; старый snapshot не может перезаписать более новое наблюдение.
 
 Если для Telegram user ID уже существует `external_identities` с `provider = 'telegram'`, импорт заполняет `participant_id` соответствующим UUID. Для неизвестного Telegram ID поле остаётся `NULL`. Обратный порядок тоже поддерживается: успешный Telegram OIDC login связывает ранее импортированную roster entry с появившимся Participant.
 
@@ -279,7 +288,7 @@ docker compose exec web npm run telegram:roster:import -- "/app/.local/telegram/
 Проверить импорт можно напрямую:
 
 ```powershell
-docker compose exec db psql -U dao -d dao -c "SELECT telegram_user_id, username, display_name, is_bot, membership_status, identity_verification, participant_id, observed_at FROM telegram_roster_entries ORDER BY display_name, telegram_user_id;"
+docker compose exec db psql -U dao -d dao -c "SELECT telegram_user_id, username, display_name, telegram_presence_status, telegram_last_seen_at, telegram_presence_observed_at, membership_status, identity_verification, participant_id FROM telegram_roster_entries ORDER BY display_name, telegram_user_id;"
 ```
 
 ### Participant Registry v0.1
@@ -296,7 +305,21 @@ ADMIN_PARTICIPANT_IDS=00000000-0000-0000-0000-000000000001
 
 `http://localhost:3000/admin/participants`
 
-Страница позволяет искать по имени, username и Telegram ID, фильтровать roster по членству и человеческой верификации и менять эти две независимые координаты. Обычный Participant перенаправляется из страницы в профиль и получает `403 Forbidden` при прямой попытке изменить запись через API.
+Страница позволяет искать по имени, username и Telegram ID, фильтровать roster по членству, человеческой верификации и категории Telegram presence, а также менять две управляемые координаты реестра. Обычный Participant перенаправляется из страницы в профиль и получает `403 Forbidden` при прямой попытке изменить запись через API.
+
+Колонка **«Последний раз в Telegram»** отображает точное время в локальном часовом
+поясе браузера, когда Telegram его раскрывает, либо исходную privacy-категорию.
+Сортировки **«Давно не появлялись»** и **«Недавно появлялись»** используют широкие
+группы давности; exact timestamps упорядочиваются внутри сопоставимой группы, а
+coarse statuses не превращаются в вымышленные даты. `unknown` всегда остаётся
+отдельной последней группой и не считается старым или неактивным аккаунтом.
+Группы идут так: exact старше 30 дней; `last_month` и exact 7–30 дней;
+`last_week` и exact 3–7 дней; `recently` и exact до 3 дней; `online`; затем
+отдельно `unknown`.
+
+Telegram presence не является активностью в ДАО и не порождает выводов
+`inactive`, `silent` или «молчун». В дальнейшем активность Participant должна
+иметь отдельное наблюдение вроде `last_observed_dao_activity_at`.
 
 `membership_status` roster имеет значения `unknown`, `participant`, `left`, `excluded`, `bot`; импортированные legacy-записи получают `unknown`. `identity_verification` остаётся отдельным значением `unverified` / `verified`, поэтому `participant + unverified` является допустимым состоянием.
 
@@ -372,6 +395,9 @@ Append-oriented журнал значимых событий. Пока:
 - `identity_verification` — `verified` или `unverified`, по умолчанию `unverified`;
 - `membership_status` — независимый управляемый статус `unknown`, `participant`, `left`, `excluded` или `bot`, по умолчанию `unknown`;
 - nullable `participant_id`, заполняемый по существующей Telegram identity или при явном Membership Binding;
+- `telegram_presence_status` — доступная категория Telegram presence;
+- nullable `telegram_last_seen_at` — только точный `was_online`, без аппроксимации privacy-категорий;
+- `telegram_presence_observed_at` — время snapshot, из которого получен presence;
 - `observed_at` — время наблюдения snapshot.
 
 ### `proposals`

@@ -8,9 +8,26 @@ export const registryMembershipStatuses = [
 
 export const registryIdentityVerifications = ["unverified", "verified"] as const;
 
+export const registryPresenceStatuses = [
+  "online",
+  "exact",
+  "recently",
+  "last_week",
+  "last_month",
+  "unknown",
+] as const;
+
+export const registrySortOptions = [
+  "name",
+  "presence_oldest",
+  "presence_newest",
+] as const;
+
 export type RegistryMembershipStatus = (typeof registryMembershipStatuses)[number];
 export type RegistryIdentityVerification =
   (typeof registryIdentityVerifications)[number];
+export type RegistryPresenceStatus = (typeof registryPresenceStatuses)[number];
+export type RegistrySort = (typeof registrySortOptions)[number];
 export type RegistryField = "membership_status" | "identity_verification";
 
 export type ParticipantRegistryEntry = {
@@ -23,12 +40,17 @@ export type ParticipantRegistryEntry = {
   participantId: string | null;
   participantDisplayName: string | null;
   observedAt: Date;
+  telegramPresenceStatus: RegistryPresenceStatus;
+  telegramLastSeenAt: Date | null;
+  telegramPresenceObservedAt: Date;
 };
 
 export type ParticipantRegistryFilters = {
   search?: string;
   membershipStatus?: string;
   identityVerification?: string;
+  telegramPresenceStatus?: string;
+  sort?: string;
 };
 
 type QueryResult = {
@@ -100,6 +122,20 @@ function isIdentityVerification(
   );
 }
 
+function isPresenceStatus(value: unknown): value is RegistryPresenceStatus {
+  return (
+    typeof value === "string" &&
+    registryPresenceStatuses.includes(value as RegistryPresenceStatus)
+  );
+}
+
+function isRegistrySort(value: unknown): value is RegistrySort {
+  return (
+    typeof value === "string" &&
+    registrySortOptions.includes(value as RegistrySort)
+  );
+}
+
 function normalizeFilters(filters: ParticipantRegistryFilters) {
   return {
     search: filters.search?.trim() ?? "",
@@ -109,7 +145,79 @@ function normalizeFilters(filters: ParticipantRegistryFilters) {
     identityVerification: isIdentityVerification(filters.identityVerification)
       ? filters.identityVerification
       : null,
+    telegramPresenceStatus: isPresenceStatus(filters.telegramPresenceStatus)
+      ? filters.telegramPresenceStatus
+      : null,
+    sort: isRegistrySort(filters.sort) ? filters.sort : "name",
   };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function presenceBand(entry: ParticipantRegistryEntry, now: Date): number {
+  if (entry.telegramPresenceStatus === "unknown") return 5;
+  if (entry.telegramPresenceStatus === "last_month") return 1;
+  if (entry.telegramPresenceStatus === "last_week") return 2;
+  if (entry.telegramPresenceStatus === "recently") return 3;
+  if (entry.telegramPresenceStatus === "online") return 4;
+
+  if (!entry.telegramLastSeenAt) return 5;
+  const age = Math.max(0, now.getTime() - entry.telegramLastSeenAt.getTime());
+  if (age > 30 * DAY_MS) return 0;
+  if (age > 7 * DAY_MS) return 1;
+  if (age > 3 * DAY_MS) return 2;
+  return 3;
+}
+
+function compareByName(
+  left: ParticipantRegistryEntry,
+  right: ParticipantRegistryEntry,
+) {
+  return left.displayName.localeCompare(right.displayName, "ru") ||
+    left.telegramUserId.localeCompare(right.telegramUserId);
+}
+
+export function sortParticipantRegistryEntries(
+  entries: ParticipantRegistryEntry[],
+  sort: RegistrySort,
+  now = new Date(),
+): ParticipantRegistryEntry[] {
+  if (sort === "name") return [...entries].sort(compareByName);
+
+  return [...entries].sort((left, right) => {
+    const leftBand = presenceBand(left, now);
+    const rightBand = presenceBand(right, now);
+    if (leftBand === 5 || rightBand === 5) {
+      if (leftBand !== rightBand) return leftBand === 5 ? 1 : -1;
+      return compareByName(left, right);
+    }
+
+    const bandDifference = sort === "presence_oldest"
+      ? leftBand - rightBand
+      : rightBand - leftBand;
+    if (bandDifference !== 0) return bandDifference;
+
+    const leftIsExact = left.telegramPresenceStatus === "exact";
+    const rightIsExact = right.telegramPresenceStatus === "exact";
+    // Coarse and exact observations share a broad band but are not cross-ranked
+    // by a fabricated point in time. Keep their subgroups stable instead.
+    if (leftIsExact !== rightIsExact) return leftIsExact ? 1 : -1;
+
+    if (
+      leftIsExact &&
+      rightIsExact &&
+      left.telegramLastSeenAt &&
+      right.telegramLastSeenAt
+    ) {
+      const exactDifference = left.telegramLastSeenAt.getTime() -
+        right.telegramLastSeenAt.getTime();
+      if (exactDifference !== 0) {
+        return sort === "presence_oldest" ? exactDifference : -exactDifference;
+      }
+    }
+
+    return compareByName(left, right);
+  });
 }
 
 export async function listParticipantRegistryWithDatabase(
@@ -126,6 +234,9 @@ export async function listParticipantRegistryWithDatabase(
             r.identity_verification,
             r.participant_id,
             r.observed_at,
+            r.telegram_presence_status,
+            r.telegram_last_seen_at,
+            r.telegram_presence_observed_at,
             p.display_name AS participant_display_name
        FROM telegram_roster_entries r
        LEFT JOIN participants p ON p.id = r.participant_id
@@ -137,16 +248,18 @@ export async function listParticipantRegistryWithDatabase(
       )
         AND ($2::text IS NULL OR r.membership_status = $2)
         AND ($3::text IS NULL OR r.identity_verification = $3)
+        AND ($4::text IS NULL OR r.telegram_presence_status = $4)
       ORDER BY lower(r.display_name), r.telegram_user_id
       LIMIT 1000`,
     [
       normalized.search,
       normalized.membershipStatus,
       normalized.identityVerification,
+      normalized.telegramPresenceStatus,
     ],
   );
 
-  return result.rows.map((row) => ({
+  const entries = result.rows.map((row) => ({
     telegramUserId: String(row.telegram_user_id),
     username: row.username ? String(row.username) : null,
     displayName: String(row.display_name),
@@ -160,7 +273,17 @@ export async function listParticipantRegistryWithDatabase(
       ? String(row.participant_display_name)
       : null,
     observedAt: new Date(String(row.observed_at)),
+    telegramPresenceStatus: String(
+      row.telegram_presence_status,
+    ) as RegistryPresenceStatus,
+    telegramLastSeenAt: row.telegram_last_seen_at
+      ? new Date(String(row.telegram_last_seen_at))
+      : null,
+    telegramPresenceObservedAt: new Date(
+      String(row.telegram_presence_observed_at),
+    ),
   }));
+  return sortParticipantRegistryEntries(entries, normalized.sort);
 }
 
 export async function listParticipantRegistry(

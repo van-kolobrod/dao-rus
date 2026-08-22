@@ -12,11 +12,26 @@ export type TelegramRosterDatabase = {
   connect(): Promise<TelegramRosterDatabaseClient>;
 };
 
+export const telegramPresenceStatuses = [
+  "online",
+  "exact",
+  "recently",
+  "last_week",
+  "last_month",
+  "unknown",
+] as const;
+
+export type TelegramPresenceStatus =
+  (typeof telegramPresenceStatuses)[number];
+
 export type TelegramRosterEntryInput = {
   telegramUserId: string;
   username: string | null;
   displayName: string;
   isBot: boolean;
+  telegramPresenceStatus: TelegramPresenceStatus;
+  telegramLastSeenAt: string | null;
+  telegramPresenceObservedAt: string;
 };
 
 export type TelegramRosterSnapshot = {
@@ -106,6 +121,53 @@ function normalizeObservedAt(value: unknown): string {
   return timestamp.toISOString();
 }
 
+function isTelegramPresenceStatus(
+  value: unknown,
+): value is TelegramPresenceStatus {
+  return (
+    typeof value === "string" &&
+    telegramPresenceStatuses.includes(value as TelegramPresenceStatus)
+  );
+}
+
+function normalizePresence(
+  entry: Record<string, unknown>,
+  index: number,
+  snapshotObservedAt: string,
+) {
+  const statusValue = entry.telegram_presence_status ?? "unknown";
+  if (!isTelegramPresenceStatus(statusValue)) {
+    throw new TelegramRosterValidationError(
+      `entries[${index}].telegram_presence_status is invalid`,
+    );
+  }
+
+  const observedAt = entry.telegram_presence_observed_at === undefined
+    ? snapshotObservedAt
+    : normalizeObservedAt(entry.telegram_presence_observed_at);
+  const lastSeenValue = entry.telegram_last_seen_at;
+  const lastSeenAt = lastSeenValue === undefined || lastSeenValue === null
+    ? null
+    : normalizeObservedAt(lastSeenValue);
+
+  if (statusValue === "exact" && lastSeenAt === null) {
+    throw new TelegramRosterValidationError(
+      `entries[${index}].telegram_last_seen_at is required for exact presence`,
+    );
+  }
+  if (statusValue !== "exact" && lastSeenAt !== null) {
+    throw new TelegramRosterValidationError(
+      `entries[${index}].telegram_last_seen_at must be null for ${statusValue} presence`,
+    );
+  }
+
+  return {
+    telegramPresenceStatus: statusValue,
+    telegramLastSeenAt: lastSeenAt,
+    telegramPresenceObservedAt: observedAt,
+  };
+}
+
 export function parseTelegramRosterSnapshot(
   value: unknown,
 ): TelegramRosterSnapshot {
@@ -140,6 +202,7 @@ export function parseTelegramRosterSnapshot(
       );
     }
 
+    const presence = normalizePresence(entry, index, observedAt);
     return {
       telegramUserId,
       username: normalizeOptionalText(
@@ -151,6 +214,7 @@ export function parseTelegramRosterSnapshot(
         `entries[${index}].display_name`,
       ),
       isBot: entry.is_bot,
+      ...presence,
     };
   });
 
@@ -229,9 +293,15 @@ export async function importTelegramRosterSnapshotWithDatabase(
            username,
            display_name,
            is_bot,
-           observed_at
+           observed_at,
+           telegram_presence_status,
+           telegram_last_seen_at,
+           telegram_presence_observed_at
          )
-         VALUES ($1::bigint, $2, $3, $4, $5::timestamptz)
+         VALUES (
+           $1::bigint, $2, $3, $4, $5::timestamptz,
+           $6, $7::timestamptz, $8::timestamptz
+         )
          ON CONFLICT (telegram_user_id) DO UPDATE SET
            username = CASE
              WHEN telegram_roster_entries.observed_at <= EXCLUDED.observed_at
@@ -245,6 +315,20 @@ export async function importTelegramRosterSnapshotWithDatabase(
            observed_at = GREATEST(
              telegram_roster_entries.observed_at,
              EXCLUDED.observed_at
+           ),
+           telegram_presence_status = CASE
+             WHEN telegram_roster_entries.telegram_presence_observed_at
+                    <= EXCLUDED.telegram_presence_observed_at
+             THEN EXCLUDED.telegram_presence_status
+             ELSE telegram_roster_entries.telegram_presence_status END,
+           telegram_last_seen_at = CASE
+             WHEN telegram_roster_entries.telegram_presence_observed_at
+                    <= EXCLUDED.telegram_presence_observed_at
+             THEN EXCLUDED.telegram_last_seen_at
+             ELSE telegram_roster_entries.telegram_last_seen_at END,
+           telegram_presence_observed_at = GREATEST(
+             telegram_roster_entries.telegram_presence_observed_at,
+             EXCLUDED.telegram_presence_observed_at
            )`,
         [
           entry.telegramUserId,
@@ -252,6 +336,9 @@ export async function importTelegramRosterSnapshotWithDatabase(
           entry.displayName,
           entry.isBot,
           snapshot.observedAt,
+          entry.telegramPresenceStatus,
+          entry.telegramLastSeenAt,
+          entry.telegramPresenceObservedAt,
         ],
       );
       rowsAffected += result.rowCount ?? 0;

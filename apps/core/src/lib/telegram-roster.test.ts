@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   importTelegramRosterSnapshotWithDatabase,
@@ -9,6 +10,21 @@ import {
 
 const participantId = "10000000-0000-0000-0000-000000000001";
 const otherParticipantId = "20000000-0000-0000-0000-000000000001";
+
+describe("Telegram presence migration", () => {
+  it("stores status, exact last seen and independent observation time", async () => {
+    const migration = await readFile(
+      new URL("../../migrations/007_telegram_presence.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migration).toContain("telegram_presence_status text NOT NULL DEFAULT 'unknown'");
+    expect(migration).toContain("telegram_last_seen_at timestamptz");
+    expect(migration).toContain("telegram_presence_observed_at timestamptz");
+    expect(migration).toContain("telegram_presence_status = 'exact'");
+    expect(migration).toContain("telegram_last_seen_at IS NOT NULL");
+  });
+});
 
 function snapshot(entries: unknown[] = [
   {
@@ -30,6 +46,9 @@ class FakeClient implements TelegramRosterDatabaseClient {
   rosterExists: boolean;
   rosterParticipantId: string | null;
   identityVerification: "verified" | "unverified";
+  telegramPresenceStatus: string;
+  telegramLastSeenAt: string | null;
+  telegramPresenceObservedAt: string;
 
   constructor(
     private readonly options: {
@@ -38,11 +57,18 @@ class FakeClient implements TelegramRosterDatabaseClient {
       rosterExists?: boolean;
       rosterParticipantId?: string | null;
       identityVerification?: "verified" | "unverified";
+      telegramPresenceStatus?: string;
+      telegramLastSeenAt?: string | null;
+      telegramPresenceObservedAt?: string;
     } = {},
   ) {
     this.rosterExists = options.rosterExists ?? false;
     this.rosterParticipantId = options.rosterParticipantId ?? null;
     this.identityVerification = options.identityVerification ?? "unverified";
+    this.telegramPresenceStatus = options.telegramPresenceStatus ?? "unknown";
+    this.telegramLastSeenAt = options.telegramLastSeenAt ?? null;
+    this.telegramPresenceObservedAt = options.telegramPresenceObservedAt ??
+      "1970-01-01T00:00:00.000Z";
   }
 
   async query(text: string, values?: unknown[]) {
@@ -61,6 +87,17 @@ class FakeClient implements TelegramRosterDatabaseClient {
         throw new Error("roster insert failed");
       }
       this.rosterExists = true;
+      const incomingPresenceObservedAt = String(values?.[7]);
+      if (
+        new Date(incomingPresenceObservedAt).getTime() >=
+        new Date(this.telegramPresenceObservedAt).getTime()
+      ) {
+        this.telegramPresenceStatus = String(values?.[5]);
+        this.telegramLastSeenAt = values?.[6] === null
+          ? null
+          : String(values?.[6]);
+        this.telegramPresenceObservedAt = incomingPresenceObservedAt;
+      }
       return { rowCount: 1, rows: [] };
     }
 
@@ -118,9 +155,61 @@ describe("parseTelegramRosterSnapshot", () => {
           username: "dao_member",
           displayName: "Участник ДАО",
           isBot: false,
+          telegramPresenceStatus: "unknown",
+          telegramLastSeenAt: null,
+          telegramPresenceObservedAt: "2026-08-21T15:15:00.000Z",
         },
       ],
     });
+  });
+
+  it.each([
+    ["online", null],
+    ["recently", null],
+    ["last_week", null],
+    ["last_month", null],
+    ["unknown", null],
+    ["exact", "2026-08-20T10:00:00+03:00"],
+  ])("preserves %s presence without inventing a timestamp", (status, lastSeenAt) => {
+    const parsed = parseTelegramRosterSnapshot(snapshot([{
+      telegram_user_id: "184229790",
+      username: null,
+      display_name: "Участник",
+      is_bot: false,
+      telegram_presence_status: status,
+      telegram_last_seen_at: lastSeenAt,
+      telegram_presence_observed_at: "2026-08-21T18:15:00+03:00",
+    }]));
+
+    expect(parsed.entries[0]).toMatchObject({
+      telegramPresenceStatus: status,
+      telegramLastSeenAt: status === "exact"
+        ? "2026-08-20T07:00:00.000Z"
+        : null,
+      telegramPresenceObservedAt: "2026-08-21T15:15:00.000Z",
+    });
+  });
+
+  it("rejects a fabricated exact timestamp for a coarse status", () => {
+    expect(() => parseTelegramRosterSnapshot(snapshot([{
+      telegram_user_id: "184229790",
+      username: null,
+      display_name: "Участник",
+      is_bot: false,
+      telegram_presence_status: "recently",
+      telegram_last_seen_at: "2026-08-20T07:00:00.000Z",
+    }]))).toThrow("must be null for recently presence");
+  });
+
+  it("rejects exact presence without was_online", () => {
+    expect(() => parseTelegramRosterSnapshot(snapshot([{
+      telegram_user_id: "184229790",
+      username: null,
+      display_name: "Участник",
+      is_bot: false,
+      telegram_presence_status: "exact",
+      telegram_last_seen_at: null,
+    }]))).toThrow("is required for exact presence");
   });
 
   it("rejects duplicate Telegram user IDs in one snapshot", () => {
@@ -212,12 +301,58 @@ describe("importTelegramRosterSnapshotWithDatabase", () => {
       "Участник ДАО",
       false,
       "2026-08-21T15:15:00.000Z",
+      "unknown",
+      null,
+      "2026-08-21T15:15:00.000Z",
     ]);
     const identityLookup = client.queries[2];
     expect(identityLookup.text).toContain("FROM external_identities");
     expect(client.rosterParticipantId).toBeNull();
     expect(client.queries[3].text).toBe("COMMIT");
     expect(client.released).toBe(true);
+  });
+
+  it("updates presence from a newer snapshot", async () => {
+    const client = new FakeClient({
+      rosterExists: true,
+      telegramPresenceStatus: "last_month",
+      telegramPresenceObservedAt: "2026-08-20T00:00:00.000Z",
+    });
+
+    await importTelegramRosterSnapshotWithDatabase(fakeDatabase(client), snapshot([{
+      telegram_user_id: "184229790",
+      username: null,
+      display_name: "Участник",
+      is_bot: false,
+      telegram_presence_status: "exact",
+      telegram_last_seen_at: "2026-08-21T14:00:00.000Z",
+    }]));
+
+    expect(client.telegramPresenceStatus).toBe("exact");
+    expect(client.telegramLastSeenAt).toBe("2026-08-21T14:00:00.000Z");
+    expect(client.queries[1].text).toContain(
+      "telegram_roster_entries.telegram_presence_observed_at",
+    );
+  });
+
+  it("does not let an older snapshot overwrite newer presence", async () => {
+    const client = new FakeClient({
+      rosterExists: true,
+      telegramPresenceStatus: "online",
+      telegramPresenceObservedAt: "2026-08-22T00:00:00.000Z",
+    });
+
+    await importTelegramRosterSnapshotWithDatabase(fakeDatabase(client), snapshot([{
+      telegram_user_id: "184229790",
+      username: null,
+      display_name: "Участник",
+      is_bot: false,
+      telegram_presence_status: "last_month",
+    }]));
+
+    expect(client.telegramPresenceStatus).toBe("online");
+    expect(client.telegramLastSeenAt).toBeNull();
+    expect(client.telegramPresenceObservedAt).toBe("2026-08-22T00:00:00.000Z");
   });
 
   it("links an imported entry to an existing Telegram identity", async () => {

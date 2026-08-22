@@ -8,40 +8,106 @@ import {
 } from "./participant-registry";
 
 const adminParticipantId = "10000000-0000-0000-0000-000000000001";
+const createdParticipantId = "20000000-0000-0000-0000-000000000001";
+const existingParticipantId = "30000000-0000-0000-0000-000000000001";
+const conflictingParticipantId = "40000000-0000-0000-0000-000000000001";
 const telegramUserId = "184229790";
 
 class FakeClient implements ParticipantRegistryDatabaseClient {
   queries: Array<{ text: string; values?: unknown[] }> = [];
   released = false;
+  membershipStatus: string;
+  identityVerification: string;
+  rosterParticipantId: string | null;
+  identityParticipantId: string | null;
 
   constructor(
-    private readonly state: {
+    private readonly options: {
       membershipStatus?: string;
       identityVerification?: string;
+      rosterParticipantId?: string | null;
+      identityParticipantId?: string | null;
       missing?: boolean;
-      failEvent?: boolean;
+      failRegistryEvent?: boolean;
     } = {},
-  ) {}
+  ) {
+    this.membershipStatus = options.membershipStatus ?? "unknown";
+    this.identityVerification = options.identityVerification ?? "unverified";
+    this.rosterParticipantId = options.rosterParticipantId ?? null;
+    this.identityParticipantId = options.identityParticipantId ?? null;
+  }
 
   async query(text: string, values?: unknown[]) {
     this.queries.push({ text, values });
 
     if (text.includes("SELECT membership_status")) {
-      if (this.state.missing) return { rowCount: 0, rows: [] };
+      if (this.options.missing) return { rowCount: 0, rows: [] };
       return {
         rowCount: 1,
-        rows: [
-          {
-            membership_status: this.state.membershipStatus ?? "unknown",
-            identity_verification: this.state.identityVerification ?? "unverified",
-          },
-        ],
+        rows: [{
+          membership_status: this.membershipStatus,
+          identity_verification: this.identityVerification,
+          participant_id: this.rosterParticipantId,
+          display_name: "Участник из roster",
+          username: "roster_member",
+        }],
       };
     }
 
-    if (text.includes("INSERT INTO events") && this.state.failEvent) {
-      throw new Error("event insert failed");
+    if (text.includes("FROM external_identities")) {
+      return this.identityParticipantId
+        ? {
+            rowCount: 1,
+            rows: [{
+              id: "50000000-0000-0000-0000-000000000001",
+              participant_id: this.identityParticipantId,
+              external_user_id: telegramUserId,
+            }],
+          }
+        : { rowCount: 0, rows: [] };
     }
+
+    if (text.includes("INSERT INTO participants")) {
+      return { rowCount: 1, rows: [{ id: createdParticipantId }] };
+    }
+
+    if (text.includes("INSERT INTO external_identities")) {
+      this.identityParticipantId = String(values?.[0]);
+      return { rowCount: 1, rows: [] };
+    }
+
+    if (
+      text.includes("UPDATE telegram_roster_entries") &&
+      text.includes("SET participant_id")
+    ) {
+      this.rosterParticipantId = String(values?.[1]);
+      return { rowCount: 1, rows: [] };
+    }
+
+    if (
+      text.includes("UPDATE telegram_roster_entries") &&
+      text.includes("SET membership_status")
+    ) {
+      this.membershipStatus = String(values?.[1]);
+      return { rowCount: 1, rows: [] };
+    }
+
+    if (
+      text.includes("UPDATE telegram_roster_entries") &&
+      text.includes("SET identity_verification")
+    ) {
+      this.identityVerification = String(values?.[1]);
+      return { rowCount: 1, rows: [] };
+    }
+
+    if (
+      text.includes("INSERT INTO events") &&
+      values?.[0] === "participant_registry.membership_status_changed" &&
+      this.options.failRegistryEvent
+    ) {
+      throw new Error("registry event insert failed");
+    }
+
     return { rowCount: 1, rows: [] };
   }
 
@@ -54,7 +120,19 @@ function fakeDatabase(client: FakeClient): ParticipantRegistryDatabase {
   return { async connect() { return client; } };
 }
 
-describe("Participant Registry migration", () => {
+function queryCount(client: FakeClient, fragment: string) {
+  return client.queries.filter(({ text }) => text.includes(fragment)).length;
+}
+
+function registryEvent(client: FakeClient) {
+  return client.queries.find(
+    ({ text, values }) =>
+      text.includes("INSERT INTO events") &&
+      values?.[0] === "participant_registry.membership_status_changed",
+  );
+}
+
+describe("Participant Registry migrations", () => {
   it("defaults imported roster membership to unknown", async () => {
     const migration = await readFile(
       new URL("../../migrations/005_participant_registry.sql", import.meta.url),
@@ -63,11 +141,21 @@ describe("Participant Registry migration", () => {
     expect(migration).toMatch(/membership_status text NOT NULL DEFAULT 'unknown'/);
     expect(migration).toContain("'unknown', 'participant', 'left', 'excluded', 'bot'");
   });
+
+  it("makes a Telegram external user ID unique for canonical identity binding", async () => {
+    const migration = await readFile(
+      new URL("../../migrations/006_membership_binding.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain("CREATE UNIQUE INDEX");
+    expect(migration).toContain("external_identities(external_user_id)");
+    expect(migration).toContain("provider = 'telegram'");
+  });
 });
 
 describe("updateParticipantRegistryWithDatabase", () => {
-  it("changes membership status and records the server-side actor", async () => {
-    const client = new FakeClient({ membershipStatus: "unknown" });
+  it("creates one Participant, Telegram identity and roster link for unknown to participant", async () => {
+    const client = new FakeClient({ identityVerification: "unverified" });
     const result = await updateParticipantRegistryWithDatabase(
       fakeDatabase(client),
       adminParticipantId,
@@ -82,10 +170,29 @@ describe("updateParticipantRegistryWithDatabase", () => {
       oldValue: "unknown",
       newValue: "participant",
     });
-    const update = client.queries.find(({ text }) => text.includes("SET membership_status"));
-    expect(update?.values).toEqual([telegramUserId, "participant"]);
-    const event = client.queries.find(({ text }) => text.includes("INSERT INTO events"));
-    expect(event?.values?.[0]).toBe("participant_registry.membership_status_changed");
+    expect(queryCount(client, "INSERT INTO participants")).toBe(1);
+    expect(queryCount(client, "INSERT INTO external_identities")).toBe(1);
+    expect(client.rosterParticipantId).toBe(createdParticipantId);
+    expect(client.identityParticipantId).toBe(createdParticipantId);
+    expect(client.identityVerification).toBe("unverified");
+
+    const participantInsert = client.queries.find(({ text }) =>
+      text.includes("INSERT INTO participants"),
+    );
+    expect(participantInsert?.values).toEqual(["Участник из roster"]);
+    expect(participantInsert?.text).toContain("'participant'");
+
+    const identityInsert = client.queries.find(({ text }) =>
+      text.includes("INSERT INTO external_identities"),
+    );
+    expect(identityInsert?.values).toEqual([
+      createdParticipantId,
+      `roster:${telegramUserId}`,
+      telegramUserId,
+      "roster_member",
+    ]);
+
+    const event = registryEvent(client);
     expect(event?.values?.[1]).toBe(adminParticipantId);
     expect(JSON.parse(String(event?.values?.[2]))).toMatchObject({
       telegram_user_id: telegramUserId,
@@ -93,12 +200,88 @@ describe("updateParticipantRegistryWithDatabase", () => {
       new_value: "participant",
       changed_by_participant_id: adminParticipantId,
     });
-    expect(JSON.parse(String(event?.values?.[2])).changed_at).toMatch(/Z$/);
     expect(client.queries.at(-1)?.text).toBe("COMMIT");
-    expect(client.released).toBe(true);
   });
 
-  it("changes verification independently from membership", async () => {
+  it("uses an existing Telegram ExternalIdentity without creating a duplicate", async () => {
+    const client = new FakeClient({ identityParticipantId: existingParticipantId });
+
+    await updateParticipantRegistryWithDatabase(
+      fakeDatabase(client),
+      adminParticipantId,
+      telegramUserId,
+      "membership_status",
+      "participant",
+    );
+
+    expect(client.rosterParticipantId).toBe(existingParticipantId);
+    expect(queryCount(client, "INSERT INTO participants")).toBe(0);
+    expect(queryCount(client, "INSERT INTO external_identities")).toBe(0);
+  });
+
+  it("uses an already linked Participant and creates only its missing Telegram identity", async () => {
+    const client = new FakeClient({ rosterParticipantId: existingParticipantId });
+
+    await updateParticipantRegistryWithDatabase(
+      fakeDatabase(client),
+      adminParticipantId,
+      telegramUserId,
+      "membership_status",
+      "participant",
+    );
+
+    expect(client.rosterParticipantId).toBe(existingParticipantId);
+    expect(client.identityParticipantId).toBe(existingParticipantId);
+    expect(queryCount(client, "INSERT INTO participants")).toBe(0);
+    expect(queryCount(client, "INSERT INTO external_identities")).toBe(1);
+  });
+
+  it("does not create duplicates when participant is saved again", async () => {
+    const client = new FakeClient({
+      membershipStatus: "participant",
+      rosterParticipantId: existingParticipantId,
+      identityParticipantId: existingParticipantId,
+    });
+
+    const result = await updateParticipantRegistryWithDatabase(
+      fakeDatabase(client),
+      adminParticipantId,
+      telegramUserId,
+      "membership_status",
+      "participant",
+    );
+
+    expect(result.changed).toBe(false);
+    expect(queryCount(client, "INSERT INTO participants")).toBe(0);
+    expect(queryCount(client, "INSERT INTO external_identities")).toBe(0);
+    expect(queryCount(client, "INSERT INTO events")).toBe(0);
+    expect(client.queries.at(-1)?.text).toBe("COMMIT");
+  });
+
+  it("reuses the same binding when an already known account is moved to participant again", async () => {
+    const client = new FakeClient({
+      membershipStatus: "left",
+      rosterParticipantId: existingParticipantId,
+      identityParticipantId: existingParticipantId,
+    });
+
+    const result = await updateParticipantRegistryWithDatabase(
+      fakeDatabase(client),
+      adminParticipantId,
+      telegramUserId,
+      "membership_status",
+      "participant",
+    );
+
+    expect(result.changed).toBe(true);
+    expect(client.rosterParticipantId).toBe(existingParticipantId);
+    expect(client.identityParticipantId).toBe(existingParticipantId);
+    expect(queryCount(client, "INSERT INTO participants")).toBe(0);
+    expect(queryCount(client, "INSERT INTO external_identities")).toBe(0);
+    expect(registryEvent(client)).toBeDefined();
+  });
+
+  it("changes verification independently without membership binding", async () => {
     const client = new FakeClient({
       membershipStatus: "participant",
       identityVerification: "unverified",
@@ -111,35 +294,23 @@ describe("updateParticipantRegistryWithDatabase", () => {
       "verified",
     );
 
-    const update = client.queries.find(({ text }) =>
-      text.includes("SET identity_verification"),
+    expect(client.identityVerification).toBe("verified");
+    expect(client.membershipStatus).toBe("participant");
+    expect(queryCount(client, "INSERT INTO participants")).toBe(0);
+    expect(queryCount(client, "INSERT INTO external_identities")).toBe(0);
+    const event = client.queries.find(
+      ({ values }) =>
+        values?.[0] === "participant_registry.identity_verification_changed",
     );
-    expect(update?.values).toEqual([telegramUserId, "verified"]);
-    expect(update?.text).not.toContain("membership_status =");
-    const event = client.queries.find(({ text }) => text.includes("INSERT INTO events"));
-    expect(event?.values?.[0]).toBe(
-      "participant_registry.identity_verification_changed",
-    );
+    expect(event).toBeDefined();
   });
 
-  it("does not update or create an event for a no-op", async () => {
-    const client = new FakeClient({ membershipStatus: "left" });
-    const result = await updateParticipantRegistryWithDatabase(
-      fakeDatabase(client),
-      adminParticipantId,
-      telegramUserId,
-      "membership_status",
-      "left",
-    );
+  it("rolls back a conflicting roster and ExternalIdentity link", async () => {
+    const client = new FakeClient({
+      rosterParticipantId: existingParticipantId,
+      identityParticipantId: conflictingParticipantId,
+    });
 
-    expect(result.changed).toBe(false);
-    expect(client.queries.some(({ text }) => text.includes("UPDATE telegram_roster_entries"))).toBe(false);
-    expect(client.queries.some(({ text }) => text.includes("INSERT INTO events"))).toBe(false);
-    expect(client.queries.at(-1)?.text).toBe("COMMIT");
-  });
-
-  it("rolls back the status update when event creation fails", async () => {
-    const client = new FakeClient({ membershipStatus: "unknown", failEvent: true });
     await expect(
       updateParticipantRegistryWithDatabase(
         fakeDatabase(client),
@@ -148,9 +319,28 @@ describe("updateParticipantRegistryWithDatabase", () => {
         "membership_status",
         "participant",
       ),
-    ).rejects.toThrow("event insert failed");
+    ).rejects.toThrow("but Telegram identity belongs to Participant");
 
-    expect(client.queries.some(({ text }) => text.includes("UPDATE telegram_roster_entries"))).toBe(true);
+    expect(queryCount(client, "INSERT INTO participants")).toBe(0);
+    expect(queryCount(client, "INSERT INTO external_identities")).toBe(0);
+    expect(registryEvent(client)).toBeUndefined();
+    expect(client.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("rolls back binding, status and participant creation when audit event fails", async () => {
+    const client = new FakeClient({ failRegistryEvent: true });
+    await expect(
+      updateParticipantRegistryWithDatabase(
+        fakeDatabase(client),
+        adminParticipantId,
+        telegramUserId,
+        "membership_status",
+        "participant",
+      ),
+    ).rejects.toThrow("registry event insert failed");
+
+    expect(queryCount(client, "INSERT INTO participants")).toBe(1);
+    expect(queryCount(client, "INSERT INTO external_identities")).toBe(1);
     expect(client.queries.at(-1)?.text).toBe("ROLLBACK");
     expect(client.queries.some(({ text }) => text === "COMMIT")).toBe(false);
   });

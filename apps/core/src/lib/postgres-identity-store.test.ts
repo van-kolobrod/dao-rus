@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { TelegramIdentityProfile } from "./identity";
+import { resolveTelegramParticipant, type TelegramIdentityProfile } from "./identity";
 
 const mocks = vi.hoisted(() => ({
   connect: vi.fn(),
@@ -36,13 +36,31 @@ class FakeIdentityClient {
   released = false;
   rosterParticipantId: string | null;
   identityVerification: "verified" | "unverified" = "verified";
+  providerSubject: string | null = null;
 
-  constructor(rosterParticipantId: string | null = null) {
+  constructor(
+    rosterParticipantId: string | null = null,
+    private readonly existingIdentityParticipantId: string | null = null,
+  ) {
     this.rosterParticipantId = rosterParticipantId;
   }
 
   async query(text: string, values?: unknown[]) {
     this.queries.push({ text, values });
+
+    if (text.includes("FROM external_identities e")) {
+      return this.existingIdentityParticipantId
+        ? {
+            rowCount: 1,
+            rows: [{
+              id: this.existingIdentityParticipantId,
+              display_name: "Участник из roster",
+              membership_status: "participant",
+              created_at: "2026-08-22T00:00:00.000Z",
+            }],
+          }
+        : { rowCount: 0, rows: [] };
+    }
 
     if (text.includes("INSERT INTO participants")) {
       return {
@@ -67,6 +85,11 @@ class FakeIdentityClient {
 
     if (text.includes("UPDATE telegram_roster_entries")) {
       this.rosterParticipantId = String(values?.[1]);
+      return { rowCount: 1, rows: [] };
+    }
+
+    if (text.includes("UPDATE external_identities")) {
+      this.providerSubject = String(values?.[1]);
       return { rowCount: 1, rows: [] };
     }
 
@@ -115,6 +138,35 @@ describe("PostgresIdentityStore Telegram roster link", () => {
     expect(client.rosterParticipantId).toBe(participantId);
     expect(client.queries[0].text).toBe("BEGIN");
     expect(client.queries.at(-1)?.text).toBe("COMMIT");
+  });
+
+  it("reuses a roster-created Telegram identity on the first later OIDC login", async () => {
+    const client = new FakeIdentityClient(participantId, participantId);
+    mocks.connect.mockResolvedValue(client);
+
+    const result = await resolveTelegramParticipant(
+      new PostgresIdentityStore(),
+      profile,
+    );
+
+    expect(result.created).toBe(false);
+    expect(result.participant.id).toBe(participantId);
+    expect(
+      client.queries.some(({ text }) => text.includes("INSERT INTO participants")),
+    ).toBe(false);
+    const lookup = client.queries.find(({ text }) =>
+      text.includes("FROM external_identities e"),
+    );
+    expect(lookup?.values).toEqual([profile.subject, profile.telegramUserId]);
+    expect(client.providerSubject).toBe(profile.subject);
+    const identityUpdate = client.queries.find(({ text }) =>
+      text.includes("UPDATE external_identities"),
+    );
+    expect(identityUpdate?.values?.slice(0, 3)).toEqual([
+      participantId,
+      profile.subject,
+      profile.telegramUserId,
+    ]);
   });
 
   it("rolls back OIDC identity creation on a conflicting roster link", async () => {

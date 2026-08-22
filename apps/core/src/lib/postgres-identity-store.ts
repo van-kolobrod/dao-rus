@@ -1,7 +1,12 @@
 import type { PoolClient } from "pg";
 import { defaultMembershipStatus } from "./config";
 import { pool } from "./db";
-import type { IdentityStore, Participant, TelegramIdentityProfile } from "./identity";
+import {
+  TelegramIdentityIntegrityError,
+  type IdentityStore,
+  type Participant,
+  type TelegramIdentityProfile,
+} from "./identity";
 import { linkTelegramRosterEntryWithClient } from "./telegram-roster";
 
 function participantFromRow(row: Record<string, unknown>): Participant {
@@ -13,22 +18,35 @@ function participantFromRow(row: Record<string, unknown>): Participant {
   };
 }
 
-async function findWithClient(client: PoolClient, subject: string): Promise<Participant | null> {
+async function findWithClient(
+  client: PoolClient,
+  profile: TelegramIdentityProfile,
+): Promise<Participant | null> {
   const result = await client.query(
     `SELECT p.id, p.display_name, p.membership_status, p.created_at
        FROM external_identities e
        JOIN participants p ON p.id = e.participant_id
-      WHERE e.provider = 'telegram' AND e.provider_subject = $1`,
-    [subject],
+      WHERE e.provider = 'telegram'
+        AND (e.provider_subject = $1 OR e.external_user_id = $2)`,
+    [profile.subject, profile.telegramUserId],
   );
+
+  const participantIds = new Set(result.rows.map((row) => String(row.id)));
+  if (participantIds.size > 1) {
+    throw new TelegramIdentityIntegrityError(
+      `Telegram OIDC subject and user ID resolve to different Participants`,
+    );
+  }
   return result.rowCount ? participantFromRow(result.rows[0]) : null;
 }
 
 export class PostgresIdentityStore implements IdentityStore {
-  async findByTelegramSubject(subject: string): Promise<Participant | null> {
+  async findByTelegramIdentity(
+    profile: TelegramIdentityProfile,
+  ): Promise<Participant | null> {
     const client = await pool.connect();
     try {
-      return await findWithClient(client, subject);
+      return await findWithClient(client, profile);
     } finally {
       client.release();
     }
@@ -43,15 +61,17 @@ export class PostgresIdentityStore implements IdentityStore {
       await client.query("BEGIN");
       await client.query(
         `UPDATE external_identities
-            SET external_user_id = $2,
-                username = $3,
-                first_name = $4,
-                last_name = $5,
-                avatar_url = $6,
+            SET provider_subject = $2,
+                external_user_id = $3,
+                username = $4,
+                first_name = $5,
+                last_name = $6,
+                avatar_url = $7,
                 updated_at = now()
           WHERE participant_id = $1 AND provider = 'telegram'`,
         [
           participantId,
+          profile.subject,
           profile.telegramUserId,
           profile.username,
           profile.firstName,
@@ -117,7 +137,7 @@ export class PostgresIdentityStore implements IdentityStore {
           await client.query("ROLLBACK");
           const existingClient = await pool.connect();
           try {
-            const existing = await findWithClient(existingClient, profile.subject);
+            const existing = await findWithClient(existingClient, profile);
             if (!existing) throw error;
             await this.updateTelegramIdentity(existing.id, profile);
             return existing;

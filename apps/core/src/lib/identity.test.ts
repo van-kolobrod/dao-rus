@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   resolveTelegramParticipant,
+  TelegramIdentityIntegrityError,
   type IdentityStore,
   type Participant,
   type TelegramIdentityProfile,
@@ -21,7 +22,7 @@ class FakeStore implements IdentityStore {
   creates = 0;
   updates = 0;
 
-  async findByTelegramSubject() {
+  async findByTelegramIdentity() {
     return this.participant;
   }
 
@@ -64,5 +65,17 @@ describe("resolveTelegramParticipant", () => {
     expect(second.created).toBe(false);
     expect(store.creates).toBe(1);
     expect(store.updates).toBe(1);
+  });
+
+  it("propagates an identity integrity conflict without creating a Participant", async () => {
+    const store = new FakeStore();
+    store.findByTelegramIdentity = async () => {
+      throw new TelegramIdentityIntegrityError("conflicting Telegram identity");
+    };
+
+    await expect(resolveTelegramParticipant(store, profile)).rejects.toThrow(
+      "conflicting Telegram identity",
+    );
+    expect(store.creates).toBe(0);
   });
 });

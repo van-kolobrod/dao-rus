@@ -298,7 +298,23 @@ ADMIN_PARTICIPANT_IDS=00000000-0000-0000-0000-000000000001
 
 Страница позволяет искать по имени, username и Telegram ID, фильтровать roster по членству и человеческой верификации и менять эти две независимые координаты. Обычный Participant перенаправляется из страницы в профиль и получает `403 Forbidden` при прямой попытке изменить запись через API.
 
-`membership_status` roster имеет значения `unknown`, `participant`, `left`, `excluded`, `bot`; импортированные legacy-записи получают `unknown`. Это поле не меняет `participants.membership_status` и не создаёт Participant. `identity_verification` остаётся отдельным значением `unverified` / `verified`, поэтому `participant + unverified` является допустимым состоянием.
+`membership_status` roster имеет значения `unknown`, `participant`, `left`, `excluded`, `bot`; импортированные legacy-записи получают `unknown`. `identity_verification` остаётся отдельным значением `unverified` / `verified`, поэтому `participant + unverified` является допустимым состоянием.
+
+#### Membership Binding v0.1
+
+Сырой roster import по-прежнему только сохраняет snapshot и никогда не создаёт `Participant` или `ExternalIdentity`. Создание канонической Core identity разрешает отдельное институциональное действие: переход roster entry из другого статуса в `membership_status = 'participant'`.
+
+При таком переходе Core под блокировкой roster entry:
+
+1. использует уже связанный `participant_id`, если он есть;
+2. иначе ищет Telegram `ExternalIdentity` по `external_user_id` и связывает её Participant с roster;
+3. если обеих связей нет, создаёт один `Participant` с display name из roster, Telegram `ExternalIdentity` и заполняет `participant_id` roster entry.
+
+Для нового Participant устанавливается статус `participant`, поскольку его создание происходит вследствие явного административного признания членства. Если Participant уже существовал, он переиспользуется без создания дубля. Telegram user ID защищён уникальным индексом среди Telegram identities. Противоречие между существующим roster link и Telegram identity считается integrity conflict: вся операция откатывается, данные не исправляются молча.
+
+Создание/связывание identity, изменение `membership_status`, `participant.created` при создании нового Participant и `participant_registry.membership_status_changed` выполняются одной транзакцией. `identity_verification` эта операция не меняет. No-op не создаёт новые сущности или события.
+
+До первого Telegram OIDC login roster-created identity использует технический `provider_subject`. При последующем login Core находит её по Telegram user ID, сохраняет фактический OIDC `sub` и создаёт сессию для того же Participant UUID.
 
 Каждое фактическое изменение статуса и его audit event записываются одной транзакцией. Автор берётся только из серверной сессии. Авторизованный администратор также видит на `/profile` ссылку **«Участники ДАО»**; её скрытие для остальных пользователей является только UX, а серверные проверки страницы и API остаются обязательными и независимыми.
 
@@ -317,13 +333,13 @@ No-op сохранение не является изменением состо
 - `membership_status`;
 - `created_at`.
 
-Новая identity по умолчанию получает статус `candidate`. Это можно изменить через `DEFAULT_MEMBERSHIP_STATUS`, но автоматическое присвоение статуса `participant` лучше вводить только после определения процедуры членства.
+Новая identity при самостоятельном Telegram OIDC login по умолчанию получает статус `candidate`. Это можно изменить через `DEFAULT_MEMBERSHIP_STATUS`. Исключение — Participant, созданный Membership Binding после явного административного признания roster entry участником: он получает статус `participant`.
 
 ### `external_identities`
 
 Связывает Participant с внешним провайдером. Для Telegram хранятся:
 
-- OIDC `sub` как `provider_subject`;
+- OIDC `sub` как `provider_subject`; до первого OIDC login identity, созданная Membership Binding, использует техническое значение;
 - Telegram user ID;
 - username;
 - first/last name;
@@ -355,7 +371,7 @@ Append-oriented журнал значимых событий. Пока:
 - `username`, `display_name`, `is_bot`;
 - `identity_verification` — `verified` или `unverified`, по умолчанию `unverified`;
 - `membership_status` — независимый управляемый статус `unknown`, `participant`, `left`, `excluded` или `bot`, по умолчанию `unknown`;
-- nullable `participant_id`, автоматически заполняемый только по существующей Telegram external identity;
+- nullable `participant_id`, заполняемый по существующей Telegram identity или при явном Membership Binding;
 - `observed_at` — время наблюдения snapshot.
 
 ### `proposals`

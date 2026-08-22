@@ -63,6 +63,13 @@ export class ParticipantRegistryNotFoundError extends Error {
   }
 }
 
+export class ParticipantRegistryIntegrityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ParticipantRegistryIntegrityError";
+  }
+}
+
 const POSTGRES_BIGINT_MAX = BigInt("9223372036854775807");
 
 function normalizeTelegramUserId(value: unknown): string {
@@ -170,6 +177,124 @@ export type ParticipantRegistryUpdateResult = {
   newValue: string;
 };
 
+async function bindParticipantForMembership(
+  client: ParticipantRegistryDatabaseClient,
+  roster: Record<string, unknown>,
+  telegramUserId: string,
+): Promise<void> {
+  const rosterParticipantId = roster.participant_id
+    ? String(roster.participant_id)
+    : null;
+  const identityResult = await client.query(
+    `SELECT id, participant_id, external_user_id
+       FROM external_identities
+      WHERE provider = 'telegram'
+        AND (
+          external_user_id = $1
+          OR ($2::uuid IS NOT NULL AND participant_id = $2::uuid)
+        )
+      FOR UPDATE`,
+    [telegramUserId, rosterParticipantId],
+  );
+
+  const userIdentity = identityResult.rows.find(
+    (row) => String(row.external_user_id) === telegramUserId,
+  );
+  const participantIdentity = rosterParticipantId
+    ? identityResult.rows.find(
+        (row) => String(row.participant_id) === rosterParticipantId,
+      )
+    : undefined;
+  const identityParticipantId = userIdentity
+    ? String(userIdentity.participant_id)
+    : participantIdentity
+      ? String(participantIdentity.participant_id)
+      : null;
+
+  if (
+    rosterParticipantId &&
+    identityParticipantId &&
+    rosterParticipantId !== identityParticipantId
+  ) {
+    throw new ParticipantRegistryIntegrityError(
+      `Telegram roster entry ${telegramUserId} is linked to Participant ${rosterParticipantId}, but Telegram identity belongs to Participant ${identityParticipantId}`,
+    );
+  }
+
+  if (
+    participantIdentity?.external_user_id &&
+    String(participantIdentity.external_user_id) !== telegramUserId
+  ) {
+    throw new ParticipantRegistryIntegrityError(
+      `Participant ${rosterParticipantId} already has a different Telegram identity`,
+    );
+  }
+
+  let participantId = rosterParticipantId ?? identityParticipantId;
+  let participantCreated = false;
+  if (!participantId) {
+    const participantResult = await client.query(
+      `INSERT INTO participants(display_name, membership_status)
+       VALUES ($1, 'participant')
+       RETURNING id`,
+      [String(roster.display_name)],
+    );
+    participantId = String(participantResult.rows[0].id);
+    participantCreated = true;
+  }
+
+  if (participantIdentity && !participantIdentity.external_user_id) {
+    await client.query(
+      `UPDATE external_identities
+          SET external_user_id = $2,
+              username = COALESCE($3, username),
+              updated_at = now()
+        WHERE id = $1`,
+      [participantIdentity.id, telegramUserId, roster.username ?? null],
+    );
+  } else if (!identityParticipantId) {
+    await client.query(
+      `INSERT INTO external_identities(
+         participant_id,
+         provider,
+         provider_subject,
+         external_user_id,
+         username
+       ) VALUES ($1, 'telegram', $2, $3, $4)`,
+      [
+        participantId,
+        `roster:${telegramUserId}`,
+        telegramUserId,
+        roster.username ?? null,
+      ],
+    );
+  }
+
+  if (!rosterParticipantId) {
+    await client.query(
+      `UPDATE telegram_roster_entries
+          SET participant_id = $2
+        WHERE telegram_user_id = $1::bigint
+          AND participant_id IS NULL`,
+      [telegramUserId, participantId],
+    );
+  }
+
+  if (participantCreated) {
+    await client.query(
+      `INSERT INTO events(event_type, participant_id, payload)
+       VALUES ('participant.created', $1, $2::jsonb)`,
+      [
+        participantId,
+        JSON.stringify({
+          source: "participant_registry",
+          telegram_user_id: telegramUserId,
+        }),
+      ],
+    );
+  }
+}
+
 export async function updateParticipantRegistryWithDatabase(
   database: ParticipantRegistryDatabase,
   changedByParticipantId: string,
@@ -195,7 +320,11 @@ export async function updateParticipantRegistryWithDatabase(
   try {
     await client.query("BEGIN");
     const current = await client.query(
-      `SELECT membership_status, identity_verification
+      `SELECT membership_status,
+              identity_verification,
+              participant_id,
+              display_name,
+              username
          FROM telegram_roster_entries
         WHERE telegram_user_id = $1::bigint
         FOR UPDATE`,
@@ -207,6 +336,10 @@ export async function updateParticipantRegistryWithDatabase(
     if (oldValue === normalizedNewValue) {
       await client.query("COMMIT");
       return { changed: false, field, oldValue, newValue: normalizedNewValue };
+    }
+
+    if (field === "membership_status" && normalizedNewValue === "participant") {
+      await bindParticipantForMembership(client, current.rows[0], telegramUserId);
     }
 
     const changedAt = new Date().toISOString();

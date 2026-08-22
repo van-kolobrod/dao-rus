@@ -26,6 +26,7 @@
 - страница `/profile/activity` со статистикой за 7 и 30 дней и последними событиями;
 - создание простых предложений и список `/proposals`;
 - приём сообщений одного разрешённого Telegram-чата через защищённый webhook;
+- одноразовый импорт Telegram roster snapshot без создания Participant;
 - заглушки для трёх будущих профилей репутации: активность, отзывы, коммуникабельность;
 - локальный demo-login, чтобы проверить прототип до настройки BotFather;
 - SQL migrations;
@@ -217,7 +218,72 @@ docker compose exec db psql -U dao -d dao -c "SELECT id, event_type, participant
 
 Повторная доставка того же `update_id` не должна добавлять вторую строку события.
 
-## 6. Модель данных v0.1
+## 6. Одноразовый Telegram Roster v0.1
+
+Bot API не предоставляет надёжный полный список участников закрытого supergroup/forum. Для лабораторного snapshot используется отдельный локальный MTProto-клиент под пользовательским Telegram-аккаунтом. Официальные точки отсчёта: [получение `api_id`/`api_hash`](https://core.telegram.org/api/obtaining_api_id), [авторизация пользователя](https://core.telegram.org/api/auth) и [`channels.getParticipants`](https://core.telegram.org/method/channels.getParticipants).
+
+Пользовательский аккаунт должен уже состоять в нужном чате. Telegram может также потребовать admin-права для чтения полного roster. Экспорт выполняется однократно и не является постоянно работающей интеграцией.
+
+### Локальный экспорт JSON
+
+1. Создай Telegram API application на [my.telegram.org](https://my.telegram.org) и получи собственные `api_id` и `api_hash`.
+2. Установи локальный Python helper в игнорируемое окружение:
+
+```powershell
+cd apps/core
+python -m venv .local/telegram-venv
+& .\.local\telegram-venv\Scripts\python.exe -m pip install -r tools/telegram/requirements.txt
+```
+
+3. Запусти exporter, указав numeric chat ID или публичный `@username`:
+
+```powershell
+& .\.local\telegram-venv\Scripts\python.exe tools/telegram/export_roster.py --chat -1001234567890
+```
+
+При первом запуске helper безопасно запросит `api_id`, `api_hash`, номер аккаунта, login code и при необходимости 2FA password. Не передавай эти значения аргументами командной строки и не добавляй их в `.env`: они не являются runtime-конфигурацией DAO Core.
+
+Session и JSON snapshot создаются в `apps/core/.local/telegram/`, который исключён из Git. Session-файл даёт доступ от имени пользовательского аккаунта: не пересылай его, после завершения импорта удали локально или отзови соответствующую сессию в Telegram Devices.
+
+Snapshot содержит только:
+
+- `telegram_user_id` в виде точной decimal string;
+- `username`;
+- `display_name`;
+- `is_bot`;
+- единый `observed_at` для снимка.
+
+Exporter не читает сообщения и не сохраняет телефонные номера.
+
+### Импорт в локальный DAO Core
+
+Примени migration и выбери последний snapshot:
+
+```powershell
+docker compose exec web npm run db:migrate
+$snapshot = (Get-ChildItem .local/telegram/telegram-roster-*.json |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 1).Name
+docker compose exec web npm run telegram:roster:import -- "/app/.local/telegram/$snapshot"
+```
+
+Импорт валидирует snapshot до подключения к PostgreSQL и выполняет весь upsert одной транзакцией. Конфликт разрешается по `telegram_user_id`. Повторный импорт обновляет только `username`, `display_name`, `is_bot` и `observed_at`; более старый snapshot не перезаписывает новое наблюдение.
+
+Если для Telegram user ID уже существует `external_identities` с `provider = 'telegram'`, импорт заполняет `participant_id` соответствующим UUID. Для неизвестного Telegram ID поле остаётся `NULL`. Обратный порядок тоже поддерживается: успешный Telegram OIDC login связывает ранее импортированную roster entry с появившимся Participant.
+
+Автоматическое связывание заполняет только пустой `participant_id` и никогда не меняет `identity_verification`. Если roster entry уже указывает на другого Participant, операция завершается integrity-ошибкой и транзакция откатывается; противоречащая связь не перезаписывается.
+
+Новая запись получает `identity_verification = 'unverified'`. Roster не создаёт `Participant` или `ExternalIdentity`, не доказывает членство, не импортирует сообщения/телефоны и не формирует репутацию. `identity_verification` означает отдельную человеческую проверку личности внутри ДАО и не является результатом Telegram OIDC/Core login.
+
+Проверить импорт можно напрямую:
+
+```powershell
+docker compose exec db psql -U dao -d dao -c "SELECT telegram_user_id, username, display_name, is_bot, identity_verification, participant_id, observed_at FROM telegram_roster_entries ORDER BY display_name, telegram_user_id;"
+```
+
+Web-страница roster пока намеренно отсутствует: сначала требуется отдельная модель admin/moderator authorization для доступа к персональному списку.
+
+## 7. Модель данных v0.1
 
 ### `participants`
 
@@ -256,6 +322,16 @@ Append-oriented журнал значимых событий. Пока:
 
 Минимальный idempotency ledger Telegram webhook. Содержит уникальный `update_id` только для сообщений известных Participant; его создание и запись события происходят в одной транзакции.
 
+### `telegram_roster_entries`
+
+Одноразовый наблюдаемый snapshot состава Telegram-чата:
+
+- `telegram_user_id` — первичный ключ;
+- `username`, `display_name`, `is_bot`;
+- `identity_verification` — `verified` или `unverified`, по умолчанию `unverified`;
+- nullable `participant_id`, автоматически заполняемый только по существующей Telegram external identity;
+- `observed_at` — время наблюдения snapshot.
+
 ### `proposals`
 
 Простые предложения Governance v0.1:
@@ -270,13 +346,13 @@ Append-oriented журнал значимых событий. Пока:
 
 Серверные сессии. В БД хранится SHA-256 hash случайного session token; сам token находится только в HttpOnly cookie браузера.
 
-## 7. Почему старый `tg-oauth-bridge` не используется
+## 8. Почему старый `tg-oauth-bridge` не используется
 
 Legacy bridge был переходником между старым Telegram Login Widget и OAuth2, который требовался Discourse. DAO Core — собственное приложение, поэтому такой промежуточный OAuth-сервер больше не нужен.
 
 Новый вход использует актуальный Telegram OIDC непосредственно.
 
-## 8. Проверка Activity v0.2
+## 9. Проверка Activity v0.2
 
 Не расширять приложение сразу.
 
@@ -292,7 +368,7 @@ Legacy bridge был переходником между старым Telegram L
 
 Только затем расширять набор событий активности.
 
-## 9. Проверка Proposal v0.1
+## 10. Проверка Proposal v0.1
 
 1. авторизованный Participant открывает `/proposals`;
 2. создаёт предложение с непустыми заголовком и текстом;

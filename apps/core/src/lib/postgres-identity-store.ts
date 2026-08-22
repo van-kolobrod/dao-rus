@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import { defaultMembershipStatus } from "./config";
 import { pool } from "./db";
 import type { IdentityStore, Participant, TelegramIdentityProfile } from "./identity";
+import { linkTelegramRosterEntryWithClient } from "./telegram-roster";
 
 function participantFromRow(row: Record<string, unknown>): Participant {
   return {
@@ -37,24 +38,43 @@ export class PostgresIdentityStore implements IdentityStore {
     participantId: string,
     profile: TelegramIdentityProfile,
   ): Promise<void> {
-    await pool.query(
-      `UPDATE external_identities
-          SET external_user_id = $2,
-              username = $3,
-              first_name = $4,
-              last_name = $5,
-              avatar_url = $6,
-              updated_at = now()
-        WHERE participant_id = $1 AND provider = 'telegram'`,
-      [
-        participantId,
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `UPDATE external_identities
+            SET external_user_id = $2,
+                username = $3,
+                first_name = $4,
+                last_name = $5,
+                avatar_url = $6,
+                updated_at = now()
+          WHERE participant_id = $1 AND provider = 'telegram'`,
+        [
+          participantId,
+          profile.telegramUserId,
+          profile.username,
+          profile.firstName,
+          profile.lastName,
+          profile.avatarUrl,
+        ],
+      );
+      await linkTelegramRosterEntryWithClient(
+        client,
         profile.telegramUserId,
-        profile.username,
-        profile.firstName,
-        profile.lastName,
-        profile.avatarUrl,
-      ],
-    );
+        participantId,
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Preserve the original error.
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async createParticipantWithTelegram(profile: TelegramIdentityProfile): Promise<Participant> {
@@ -85,6 +105,11 @@ export class PostgresIdentityStore implements IdentityStore {
             profile.lastName,
             profile.avatarUrl,
           ],
+        );
+        await linkTelegramRosterEntryWithClient(
+          client,
+          profile.telegramUserId,
+          participant.id,
         );
       } catch (error: unknown) {
         const code = (error as { code?: string }).code;
